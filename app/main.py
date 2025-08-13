@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 from app.api.v1.endpoints import text_processing
 from app.api.v1.endpoints import auth
+from app.api.v1.endpoints import frontend
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +35,12 @@ app.include_router(
     text_processing.router,
     prefix="/api/v1/text",
     tags=["Text Processing"]
+)
+
+app.include_router(
+    frontend.router,
+    prefix="/api/v1/frontend",
+    tags=["Frontend"]
 )
 
 """ if settings.API_KEY:
