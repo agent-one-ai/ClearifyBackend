@@ -1,9 +1,20 @@
 import os
 from dotenv import load_dotenv
 
+#Importo il dotenv per la configurazione
 load_dotenv()
 
 class Settings:
+    #App Setting
+    app_name: str = os.getenv("APP_NAME")
+    debug: bool = os.getenv("DEBUG")
+    environment: str = os.getenv("ENVIRONMENT")
+
+    #Indirizzi redis e celery per gestione dei task
+    redis_url: str = os.getenv("REDIS_URL")
+    celery_broker_url: str = os.getenv("CELERY_BROKER_URL")
+    celery_result_backend: str = os.getenv("CELERY_RESULT_BACKEND")
+
     # Supabase
     SUPABASE_URL: str = os.getenv("SUPABASE_URL")
     SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY")
@@ -22,6 +33,18 @@ class Settings:
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
     HOST: str = os.getenv("HOST", "127.0.0.1")
     API_KEY: str = os.getenv("API_KEY", "")
+
+    openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
+
+    # Rate limiting
+    rate_limit_requests: int = os.getenv("RATE_LIMIT_REQUESTS")
+    rate_limit_window: int = os.getenv("RATE_LIMIT_WINDOW")
+
+    cors_origins: str = f"http://localhost:3000,http://127.0.0.1:3000,{FRONTEND_URL}"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",")]
 
     # CORS
     ALLOWED_ORIGINS = [
