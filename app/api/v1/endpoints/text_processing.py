@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from typing import Dict, Any
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.schemas.text_schemas import (
     TextProcessingRequest, 
@@ -44,7 +44,8 @@ async def process_text(
                 "anonymous",  # Replace with current_user.id when auth is added
                 request.options
             ],
-            task_id=task_id
+            task_id=task_id,
+            queue="text_processing"
         )
         
         logger.info(f"Started text processing task {task_id}")

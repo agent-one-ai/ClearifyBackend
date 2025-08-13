@@ -11,31 +11,41 @@ from app.schemas.text_schemas import TextProcessingType, TaskStatus
 logger = logging.getLogger(__name__)
 
 @celery_app.task(bind=True, name="process_text")
-def process_text_task(self, text: str, processing_type: str, user_id: str, options: Dict[str, Any] = None):
-    """
-    Background task to process text using OpenAI
-    """
+def process_text_task(self, text: str, processing_type: str, user_id: str, options: dict = None):
     task_id = self.request.id
-    
+
     try:
-        # Update task status
         logger.info(f"Starting text processing task {task_id} for user {user_id}")
-        
-        # Update progress
+
+        #Aggiorno lo stato del task 
         self.update_state(
             state="PROCESSING",
             meta={
-                "status": "processing", 
+                "status": "processing",
                 "progress": 80,
                 "message": "Processing complete, finalizing..."
             }
         )
-        
-        # Calculate metrics
+
+        # --- CHIAMATA OPENAI ---
+        try:
+            # Convert string to Enum
+            processing_type_enum = TextProcessingType(processing_type)
+            processed_text = asyncio.run(
+                openai_service.process_text(
+                    text=text,
+                    processing_type=processing_type_enum,
+                    options=options
+                )
+            )
+        except Exception as e:
+            logger.error(f"OpenAI processing failed: {e}")
+            raise e
+
+        # Calcola metriche
         original_word_count = len(text.split())
         processed_word_count = len(processed_text.split())
-        
-        # Final result
+
         result = {
             "status": "completed",
             "progress": 100,
@@ -45,18 +55,18 @@ def process_text_task(self, text: str, processing_type: str, user_id: str, optio
                 "processing_type": processing_type,
                 "word_count_original": original_word_count,
                 "word_count_processed": processed_word_count,
-                "processing_time": (datetime.utcnow() - datetime.fromisoformat(self.request.eta or datetime.utcnow().isoformat())).total_seconds() if self.request.eta else 0,
+                "processing_time": (
+                    datetime.utcnow() - datetime.fromisoformat(self.request.eta or datetime.utcnow().isoformat())
+                ).total_seconds() if self.request.eta else 0,
             },
             "message": "Text processing completed successfully"
         }
-        
+
         logger.info(f"Task {task_id} completed successfully")
         return result
-        
+
     except Exception as exc:
         logger.error(f"Task {task_id} failed: {str(exc)}")
-        
-        # Update task state with error
         self.update_state(
             state="FAILURE",
             meta={
@@ -66,8 +76,6 @@ def process_text_task(self, text: str, processing_type: str, user_id: str, optio
                 "message": "Text processing failed"
             }
         )
-        
-        # Re-raise the exception so Celery marks it as failed
         raise exc
 
 @celery_app.task(name="cleanup_expired_tasks")
