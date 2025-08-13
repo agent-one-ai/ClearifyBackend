@@ -1,3 +1,5 @@
+version: '3.9'
+
 services:
   # Main FastAPI application
   app:
@@ -34,45 +36,45 @@ services:
       - clearify-network
     command: redis-server --appendonly yes
 
-  # Celery worker for background tasks (disabled for now)
-  # worker:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   container_name: clearify-worker
-  #   command: celery -A app.workers.celery_app worker --loglevel=info
-  #   volumes:
-  #     - .:/app
-  #   environment:
-  #     - PYTHONPATH=/app
-  #     - ENVIRONMENT=development
-  #   env_file:
-  #     - .env
-  #   depends_on:
-  #     - redis
-  #   restart: unless-stopped
-  #   networks:
-  #     - clearify-network
+  # Celery worker for background tasks
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clearify-worker
+    command: celery -A app.core.celery_app worker --loglevel=info --queues=text_processing
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+      - ENVIRONMENT=development
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - clearify-network
 
-  # Celery Beat for scheduled tasks (disabled for now)
-  # beat:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   container_name: clearify-beat
-  #   command: celery -A app.workers.celery_app beat --loglevel=info
-  #   volumes:
-  #     - .:/app
-  #   environment:
-  #     - PYTHONPATH=/app
-  #     - ENVIRONMENT=development
-  #   env_file:
-  #     - .env
-  #   depends_on:
-  #     - redis
-  #   restart: unless-stopped
-  #   networks:
-  #     - clearify-network
+  # Celery Beat for scheduled tasks (optional)
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clearify-beat
+    command: celery -A app.core.celery_app beat --loglevel=info
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+      - ENVIRONMENT=development
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - clearify-network
 
 volumes:
   redis_data:

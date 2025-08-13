@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+from typing import Optional
 
 #Importo il dotenv per la configurazione
 load_dotenv()
