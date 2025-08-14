@@ -167,7 +167,11 @@ class OpenAIService:
 
                 logger.info("=== TEXT PROCESSING SUCCESS ===")
                 # Gabbo, con la classe humanizer, provo ad individuare dei pattern tipici AI e li sostituisco
-                processed_text = humanizer.humanize(processed_text)
+                if processing_type == "humanizer":
+                    logger.info("=== UMANIZZO ===")
+                    processed_text = humanizer.humanize(processed_text)
+                
+                # Ritorno il testo processato
                 return processed_text
 
             except (RateLimitError, APIError, asyncio.TimeoutError) as e:
