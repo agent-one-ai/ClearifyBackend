@@ -10,15 +10,14 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
 
 class TextProcessingType(str, Enum):
-    HUMANIZE = "humanize"
-    IMPROVE = "improve"
-    SIMPLIFY = "simplify"
+    HUMANIZER = "humanizer"
     PROFESSIONAL = "professional"
-    CASUAL = "casual"
+    STYLE = "style"
+    GRAMMAR = "grammar"
 
 class TextProcessingRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=10000, description="Text to process")
-    processing_type: TextProcessingType = Field(default=TextProcessingType.HUMANIZE)
+    processing_type: TextProcessingType = Field(default=TextProcessingType.HUMANIZER)
     options: Optional[Dict[str, Any]] = Field(default={}, description="Additional processing options")
     
     @validator('text')
