@@ -18,7 +18,7 @@ PROCESSING_TYPE_TO_PROMPT_NAME = {
 }
 
 class OpenAIService:
-    def __init__(self, max_retries: int = 3, request_timeout: int = 30):
+    def __init__(self, max_retries: int = 3, request_timeout: int = 200):
         if not settings.openai_api_key:
             raise ValueError("OpenAI API key is required")
         self.prompts_cache: Dict[str, str] = {}  # {name: prompt}

@@ -15,6 +15,7 @@ class ContentTemplate(BaseModel):
     description: str
     preview: str
     category: str
+    icon: str
 
 
 

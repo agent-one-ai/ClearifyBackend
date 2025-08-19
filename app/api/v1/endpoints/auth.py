@@ -40,7 +40,7 @@ def serialize_datetime_fields(data: dict) -> dict:
             result[key] = value.isoformat()
     return result
 
-def create_access_token(data: dict, expires_delta: int = 900):  # 15 minuti
+def create_access_token(data: dict, expires_delta: int = 86400):  # Per ora metto 24 ore, valutiamo
     """Token di accesso di breve durata"""
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(seconds=expires_delta)
