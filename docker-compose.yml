@@ -42,7 +42,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: clearify-worker
-    command: celery -A app.core.celery_app worker --loglevel=info --queues=text_processing
+    command: celery -A app.core.celery_app worker --loglevel=info --queues=text_processing,webhooks,payments,emails
     volumes:
       - .:/app
     environment:

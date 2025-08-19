@@ -34,6 +34,13 @@ class Settings:
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
     HOST: str = os.getenv("HOST", "127.0.0.1")
     API_KEY: str = os.getenv("API_KEY", "")
+    JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "")
+    JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "")
+
+    #Stripe
+    STRIPE_PUBLIC_KEY: str = os.getenv("STRIPE_PUBLIC_KEY", "")
+    STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
+    STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 
     openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
 

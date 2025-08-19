@@ -9,6 +9,7 @@ from datetime import datetime
 from app.api.v1.endpoints import text_processing
 from app.api.v1.endpoints import auth
 from app.api.v1.endpoints import frontend
+from app.api.v1.endpoints import payments
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -36,6 +37,13 @@ app.include_router(
     prefix="/api/v1/text",
     tags=["Text Processing"]
 )
+
+app.include_router(
+    payments.router,
+    prefix="/api/v1/payments",
+    tags=["Payment Processing"]
+)
+
 
 app.include_router(
     frontend.router,

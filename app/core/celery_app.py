@@ -27,6 +27,7 @@ celery_app.conf.update(
     task_routes={
         "app.workers.tasks.process_text": {"queue": "text_processing"},
         "app.workers.tasks.humanize_text": {"queue": "text_processing"},
+        "app.workers.tasks.handle_webhook_event_task": {"queue": "webhooks"}
     },
     
     # Task execution
