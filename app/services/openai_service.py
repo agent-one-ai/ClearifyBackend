@@ -115,9 +115,15 @@ class OpenAIService:
         if options and "tone" in options:
             tone_prompt = await self._get_prompt(options["tone"])
             logger.debug("Tone prompt: %s", tone_prompt)
+        
+        # 3) Merge con prompt del template
+        template_prompt = ""
+        if options and "template" in options:
+            template_prompt = await self._get_prompt(options["template"])
+            logger.debug("Template prompt: %s", template_prompt)
 
         # 4) Costruzione prompt finale
-        final_prompt_parts = [part for part in [base_prompt, tone_prompt] if part]
+        final_prompt_parts = [part for part in [base_prompt, tone_prompt, template_prompt] if part]
         prompt = "\n\n".join(final_prompt_parts)
 
         if "{text}" in prompt or "[text]" in prompt:
