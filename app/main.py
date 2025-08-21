@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -19,13 +19,55 @@ from app.api.v1.endpoints import payments
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# Rate Limiter Setup
+# ================================
+# UTILITY FUNCTIONS PER PROXY (DEFINITE PRIMA)
+# ================================
+
+def is_behind_proxy(request: Request) -> bool:
+    """Rileva se la richiesta arriva da nginx proxy"""
+    return (
+        request.headers.get("x-forwarded-proto") == "https" or
+        request.headers.get("x-forwarded-host") is not None or
+        request.headers.get("x-real-ip") is not None
+    )
+
+def get_client_ip(request: Request) -> str:
+    """Ottieni l'IP reale del client considerando proxy headers"""
+    try:
+        # Priorità: X-Real-IP (nginx) > X-Forwarded-For > remote address
+        real_ip = request.headers.get("x-real-ip")
+        if real_ip:
+            return real_ip
+        
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
+        
+        if hasattr(request, 'client') and request.client:
+            return request.client.host
+        
+        return "unknown"
+    except Exception as e:
+        logger.warning(f"Error getting client IP: {e}")
+        return "unknown"
+
+# Rate Limiter Setup - AGGIORNATO
 def get_user_id_or_ip(request):
-    """Funzione per identificare l'utente (IP se non autenticato)"""
-    # TODO: Aggiorna quando implementi l'autenticazione completa
-    # if hasattr(request.state, 'user') and request.state.user:
-    #     return f"user_{request.state.user.id}"
-    return get_remote_address(request)
+    """Funzione per identificare l'utente (IP se non autenticato) - SAFE VERSION"""
+    try:
+        # TODO: Aggiorna quando implementi l'autenticazione completa
+        # if hasattr(request.state, 'user') and request.state.user:
+        #     return f"user_{request.state.user.id}"
+        
+        # Usa la funzione sicura get_client_ip
+        return get_client_ip(request)
+    except Exception as e:
+        logger.warning(f"Error in get_user_id_or_ip: {e}")
+        try:
+            # Fallback a get_remote_address se disponibile
+            return get_remote_address(request)
+        except Exception:
+            return "unknown"
 
 # Setup Redis per rate limiting
 try:
@@ -51,7 +93,7 @@ else:
 # Create FastAPI app
 app = FastAPI(
     title=settings.app_name,
-    description="Text humanization and improvement service with rate limiting",
+    description="Text humanization and improvement service with nginx proxy",
     version="1.0.0",
     docs_url="/docs" if os.getenv("ENVIRONMENT") == "development" else None
 )
@@ -63,7 +105,11 @@ app.state.limiter = limiter
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request, exc: RateLimitExceeded):
     """Handler personalizzato per errori di rate limiting"""
-    logger.warning(f"Rate limit exceeded for {get_user_id_or_ip(request)}: {exc.detail}")
+    try:
+        client_ip = get_client_ip(request)
+        logger.warning(f"Rate limit exceeded for {client_ip}: {exc.detail}")
+    except Exception:
+        logger.warning(f"Rate limit exceeded: {exc.detail}")
     
     return JSONResponse(
         status_code=429,
@@ -76,14 +122,160 @@ async def rate_limit_handler(request, exc: RateLimitExceeded):
         }
     )
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ================================
+# CONFIGURAZIONE CORS PER NGINX PROXY HTTPS
+# ================================
+
+# Configurazione per proxy HTTPS - nginx gestisce CORS principale
+frontend_url = os.getenv("FRONTEND_URL", "https://localhost:3000")
+is_development = os.getenv("ENVIRONMENT", "development") == "development"
+
+print(f"🌐 Frontend URL: {frontend_url}")
+print(f"🔧 Environment: {os.getenv('ENVIRONMENT', 'development')}")
+print(f"🔗 Behind nginx proxy: Expected")
+
+if is_development:
+    # In sviluppo, includi sia nginx proxy che accesso diretto
+    allowed_origins = [
+        "https://localhost:3000",      # Frontend
+        "https://localhost",           # Nginx proxy
+        "http://localhost:3000",       # Fallback dev
+        "https://127.0.0.1:3000",     # Alternative localhost
+        "https://clearify.local",      # Custom domain
+        frontend_url                   # Da environment
+    ]
+    print(f"🔧 Dev mode - FastAPI CORS origins: {allowed_origins}")
+else:
+    # In produzione, usa configurazione da settings
+    cors_origins = os.getenv("CORS_ORIGINS", frontend_url)
+    if isinstance(cors_origins, str):
+        allowed_origins = [origin.strip() for origin in cors_origins.split(',')]
+    else:
+        allowed_origins = [frontend_url]
+    print(f"🔧 Prod mode - FastAPI CORS origins: {allowed_origins}")
+
+# CORS middleware DISABILITATO - nginx gestisce tutto
+print("🔗 CORS managed by nginx proxy - FastAPI CORS disabled")
+
+# ================================
+# MIDDLEWARE PER NGINX PROXY - AGGIORNATO E SICURO
+# ================================
+
+@app.middleware("http")
+async def proxy_headers_middleware(request: Request, call_next):
+    """Middleware per gestire headers da nginx proxy"""
+    
+    try:
+        # Debug headers da proxy
+        if os.getenv("DEBUG", "false").lower() == "true":
+            forwarded_proto = request.headers.get("x-forwarded-proto")
+            forwarded_host = request.headers.get("x-forwarded-host")
+            real_ip = request.headers.get("x-real-ip")
+            behind_proxy = is_behind_proxy(request)
+            
+            print(f"\n🌐 === PROXY REQUEST DEBUG ===")
+            print(f"🌐 {request.method} {request.url}")
+            print(f"🔗 Origin: {request.headers.get('origin', 'None')}")
+            print(f"🔗 Referer: {request.headers.get('referer', 'None')}")
+            print(f"🍪 Request cookies: {dict(request.cookies)}")
+            print(f"🍪 Cookie header: {request.headers.get('cookie', 'No cookie header')}")
+            
+            # Proxy headers
+            print(f"🔗 X-Forwarded-Proto: {forwarded_proto}")
+            print(f"🔗 X-Forwarded-Host: {forwarded_host}")
+            print(f"🔗 X-Real-IP: {real_ip}")
+            print(f"🔗 Behind nginx proxy: {behind_proxy}")
+            print(f"🔗 Client IP: {get_client_ip(request)}")
+            
+            print(f"🔐 User-Agent: {request.headers.get('user-agent', 'Unknown')[:50]}...")
+            print(f"⚙️ Frontend URL: {os.getenv('FRONTEND_URL')}")
+            print(f"🔒 Request scheme: {request.url.scheme}")
+            print(f"🏠 Request host: {request.headers.get('host', 'Unknown')}")
+            
+            if behind_proxy:
+                print(f"✅ GOOD: Request via HTTPS nginx proxy")
+            else:
+                print(f"⚠️  Direct request (bypassing nginx proxy)")
+            
+            if not request.cookies:
+                print(f"⚠️  WARNING: No cookies received")
+            
+            print(f"🌐 ===============================\n")
+        
+        # Log richieste OPTIONS (preflight)
+        if request.method == "OPTIONS" and os.getenv("DEBUG", "false").lower() == "true":
+            print(f"🔍 CORS Preflight - Origin: {request.headers.get('origin')}")
+            print(f"🔍 CORS Preflight - Method: {request.headers.get('access-control-request-method')}")
+            print(f"🔍 CORS Preflight - Headers: {request.headers.get('access-control-request-headers')}")
+        
+        response = await call_next(request)
+        
+        # Aggiungi headers di debug per proxy
+        if os.getenv("DEBUG", "false").lower() == "true":
+            response.headers["X-Proxy-Debug"] = "nginx-proxy"
+            response.headers["X-Backend-Scheme"] = request.url.scheme
+            response.headers["X-Behind-Proxy"] = str(is_behind_proxy(request))
+            response.headers["X-Client-IP"] = get_client_ip(request)
+            
+            # Log response headers per debug
+            if request.method == "OPTIONS":
+                print(f"🔍 CORS Response Headers:")
+                for key, value in response.headers.items():
+                    if key.lower().startswith('access-control'):
+                        print(f"   {key}: {value}")
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Proxy headers middleware error: {e}")
+        # In caso di errore, continua comunque
+        return await call_next(request)
+
+# Global rate limiting per tutti gli endpoint - AGGIORNATO E SICURO
+@app.middleware("http") 
+async def rate_limit_middleware(request, call_next):
+    """Middleware globale per rate limiting base - SAFE VERSION"""
+    try:
+        # Rate limiting globale molto permissivo per endpoint non critici
+        if not any(path in str(request.url) for path in ["/health", "/docs", "/openapi.json", "/"]):
+            try:
+                current_minute = datetime.utcnow().strftime("%Y%m%d%H%M")
+                
+                # Usa get_client_ip sicuro
+                ip = get_client_ip(request)
+                key = f"global_rate_limit:{ip}:{current_minute}"
+                
+                if redis_available:
+                    current_count = redis_client.get(key) or 0
+                    if int(current_count) >= 300:  # 300 req/min limite globale
+                        return JSONResponse(
+                            status_code=429,
+                            content={
+                                "error": "Global rate limit exceeded", 
+                                "message": "Too many requests from this IP",
+                                "retry_after": 60
+                            }
+                        )
+                    redis_client.incr(key)
+                    redis_client.expire(key, 60)
+            except Exception as e:
+                logger.warning(f"Rate limit middleware error: {e}")
+                # Non bloccare la richiesta se il rate limiting fallisce
+        
+        response = await call_next(request)
+        return response
+        
+    except Exception as e:
+        logger.error(f"Rate limit middleware error: {e}")
+        # In caso di errore critico, continua comunque con la richiesta
+        try:
+            return await call_next(request)
+        except Exception as e2:
+            logger.error(f"Critical middleware error: {e2}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Internal server error", "detail": "Middleware error"}
+            )
 
 # Include routers con rate limiting
 app.include_router(
@@ -106,42 +298,6 @@ app.include_router(
 
 app.include_router(auth.router, prefix="/api/v1")
 
-# Global rate limiting per tutti gli endpoint non specificati
-@app.middleware("http")
-async def rate_limit_middleware(request, call_next):
-    """Middleware globale per rate limiting base"""
-    try:
-        # Rate limiting globale molto permissivo per endpoint non critici
-        if not any(path in str(request.url) for path in ["/health", "/docs", "/openapi.json", "/"]):
-            # Applica un rate limit base di 300 req/min per IP
-            try:
-                current_minute = datetime.utcnow().strftime("%Y%m%d%H%M")
-                ip = get_remote_address(request)
-                key = f"global_rate_limit:{ip}:{current_minute}"
-                
-                if redis_available:
-                    current_count = redis_client.get(key) or 0
-                    if int(current_count) >= 300:  # 300 req/min limite globale
-                        return JSONResponse(
-                            status_code=429,
-                            content={
-                                "error": "Global rate limit exceeded", 
-                                "message": "Too many requests from this IP",
-                                "retry_after": 60
-                            }
-                        )
-                    redis_client.incr(key)
-                    redis_client.expire(key, 60)
-            except Exception as e:
-                logger.warning(f"Rate limit middleware error: {e}")
-        
-        response = await call_next(request)
-        return response
-        
-    except Exception as e:
-        logger.error(f"Middleware error: {e}")
-        return await call_next(request)
-
 @app.get("/")
 async def root():
     return {
@@ -150,6 +306,9 @@ async def root():
         "environment": settings.environment,
         "docs": "/docs" if settings.debug else None,
         "rate_limiting": "enabled" if redis_available else "memory_fallback",
+        "cors_debug": os.getenv("DEBUG", "false").lower() == "true",
+        "frontend_url": os.getenv("FRONTEND_URL"),
+        "proxy_mode": "nginx-https",
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -188,6 +347,17 @@ async def health_check():
             "version": "1.0.0",
             "environment": settings.environment,
             "timestamp": datetime.utcnow().isoformat(),
+            "proxy_config": {
+                "mode": "nginx-https",
+                "frontend_url": os.getenv("FRONTEND_URL"),
+                "behind_proxy_expected": True,
+                "debug_mode": os.getenv("DEBUG", "false").lower() == "true"
+            },
+            "cors_config": {
+                "allowed_origins": allowed_origins if is_development else "configured",
+                "credentials_enabled": True,
+                "managed_by": "nginx only"
+            },
             "services": {
                 "redis": redis_status,
                 "openai": "configured" if settings.openai_api_key else "not configured",
@@ -207,15 +377,87 @@ async def health_check():
             }
         )
 
+@app.get("/api/v1/test-proxy")
+async def test_proxy_setup(request: Request):
+    """Test dell'integrazione nginx proxy + FastAPI"""
+    
+    try:
+        headers = dict(request.headers)
+        cookies = dict(request.cookies)
+        behind_proxy = is_behind_proxy(request)
+        client_ip = get_client_ip(request)
+        
+        analysis = {
+            "proxy_analysis": {
+                "behind_proxy": behind_proxy,
+                "forwarded_proto": headers.get("x-forwarded-proto"),
+                "forwarded_host": headers.get("x-forwarded-host"),
+                "real_ip": headers.get("x-real-ip"),
+                "client_ip": client_ip,
+                "original_scheme": request.url.scheme,
+                "original_host": headers.get("host")
+            },
+            "cookie_analysis": {
+                "cookies_received": cookies,
+                "cookie_count": len(cookies),
+                "has_access_token": "access_token" in cookies,
+                "has_refresh_token": "refresh_token" in cookies,
+                "cookie_header": headers.get("cookie", "No cookie header")
+            },
+            "cors_analysis": {
+                "origin": headers.get("origin"),
+                "origin_allowed": headers.get("origin") in allowed_origins,
+                "credentials_mode": "include" if request.headers.get("cookie") else "omit"
+            },
+            "configuration": {
+                "frontend_url": os.getenv("FRONTEND_URL"),
+                "environment": os.getenv("ENVIRONMENT"),
+                "nginx_proxy_expected": True,
+                "allowed_origins": allowed_origins,
+                "debug_mode": os.getenv("DEBUG", "false").lower() == "true"
+            },
+            "recommendations": []
+        }
+        
+        # Raccomandazioni automatiche
+        if not behind_proxy:
+            analysis["recommendations"].append("⚠️  Request not coming through nginx proxy")
+            analysis["recommendations"].append("💡 Frontend should call https://localhost/api/ not http://localhost:8000/api/")
+        
+        if analysis["proxy_analysis"]["forwarded_proto"] == "https":
+            analysis["recommendations"].append("✅ HTTPS forwarded correctly by nginx")
+        
+        if len(cookies) == 0:
+            analysis["recommendations"].append("❌ No cookies received")
+            analysis["recommendations"].append("💡 Check frontend uses credentials: 'include'")
+        
+        if behind_proxy and len(cookies) > 0:
+            analysis["recommendations"].append("✅ Nginx proxy + cookies working correctly!")
+        
+        return analysis
+    except Exception as e:
+        logger.error(f"Test proxy error: {e}")
+        return {"error": str(e), "status": "error"}
+
 @app.get("/api/v1/metrics")
 @limiter.limit("60/minute")
 async def get_global_metrics(request):
     """Endpoint per metriche globali di rate limiting"""
     try:
+        client_ip = get_client_ip(request)
+        behind_proxy = is_behind_proxy(request)
+        
         metrics = {
             "rate_limiting": {
                 "status": "redis" if redis_available else "memory",
                 "backend": settings.redis_url if redis_available else "in-memory"
+            },
+            "proxy_config": {
+                "behind_nginx_proxy": behind_proxy,
+                "client_ip": client_ip,
+                "environment": os.getenv("ENVIRONMENT", "development"),
+                "frontend_url": os.getenv("FRONTEND_URL"),
+                "debug_mode": os.getenv("DEBUG", "false").lower() == "true"
             },
             "timestamp": datetime.utcnow().isoformat()
         }
@@ -273,6 +515,9 @@ async def startup_event():
     logger.info(f"🚀 {settings.app_name} starting up...")
     logger.info(f"Environment: {settings.environment}")
     logger.info(f"Debug mode: {settings.debug}")
+    logger.info(f"Frontend URL: {os.getenv('FRONTEND_URL')}")
+    logger.info(f"🔗 Nginx proxy mode: ENABLED")
+    logger.info(f"CORS Debug: {os.getenv('DEBUG', 'false').lower() == 'true'}")
     
     if settings.openai_api_key:
         logger.info("✅ OpenAI API configured")
@@ -283,6 +528,12 @@ async def startup_event():
         logger.info("✅ Rate limiting with Redis enabled")
     else:
         logger.warning("⚠️  Using in-memory rate limiting")
+    
+    # Log configurazione CORS
+    logger.info(f"✅ CORS fully managed by nginx")
+    logger.info(f"🔗 Proxy headers detection: X-Forwarded-Proto, X-Real-IP, X-Forwarded-Host")
+    if is_development:
+        logger.info(f"🔧 Development allowed origins: {allowed_origins}")
 
 @app.on_event("shutdown")
 async def shutdown_event():

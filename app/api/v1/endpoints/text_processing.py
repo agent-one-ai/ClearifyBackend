@@ -30,14 +30,52 @@ except Exception as e:
     redis_available = False
     logger.warning(f"Redis not available for OpenAI rate limiting: {e}")
 
-# Rate limiter (viene registrato nel main.py)
-def get_user_id_or_ip(request: Request):
-    """Funzione per identificare l'utente"""
-    return get_remote_address(request)
+# ================================
+# FUNZIONI SICURE PER RATE LIMITING
+# ================================
+
+def get_client_ip_safe(request: Request) -> str:
+    """Ottieni l'IP reale del client in modo sicuro"""
+    try:
+        # Priorità: X-Real-IP (nginx) > X-Forwarded-For > remote address
+        real_ip = request.headers.get("x-real-ip")
+        if real_ip:
+            return real_ip
+        
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
+        
+        if hasattr(request, 'client') and request.client:
+            return request.client.host
+        
+        return "unknown"
+    except Exception as e:
+        logger.warning(f"Error getting client IP: {e}")
+        return "unknown"
+
+def get_user_id_or_ip_safe(request: Request):
+    """Funzione sicura per identificare l'utente"""
+    try:
+        # TODO: Aggiorna quando implementi l'autenticazione completa
+        # if hasattr(request.state, 'user') and request.state.user:
+        #     return f"user_{request.state.user.id}"
+        
+        return get_client_ip_safe(request)
+    except Exception as e:
+        logger.warning(f"Error in get_user_id_or_ip_safe: {e}")
+        try:
+            return get_remote_address(request)
+        except Exception:
+            return "unknown"
 
 def get_global_key(request: Request):
     """Chiave globale per rate limiting OpenAI"""
     return "openai_global"
+
+# ================================
+# FUNZIONI OPENAI QUOTA (INVARIATE)
+# ================================
 
 async def check_openai_quota() -> tuple[bool, dict]:
     """
@@ -120,9 +158,34 @@ def estimate_tokens(text: str) -> int:
     # Token minimi e massimi ragionevoli
     return max(50, min(estimated_tokens, 4000))
 
-# Ottieni il limiter dall'app state (registrato nel main.py)
+# ================================
+# RATE LIMITING SICURO
+# ================================
+
 def get_limiter(request: Request):
-    return request.app.state.limiter
+    """Ottieni il limiter dall'app state in modo sicuro"""
+    try:
+        return request.app.state.limiter
+    except Exception as e:
+        logger.warning(f"Could not get limiter from app state: {e}")
+        return None
+
+async def apply_rate_limit_safe(request: Request, limit: str, key_func=None):
+    """Applica rate limiting in modo sicuro"""
+    try:
+        limiter = get_limiter(request)
+        if limiter:
+            if key_func:
+                await limiter.limit(limit, key_func=key_func)(request)
+            else:
+                await limiter.limit(limit)(request)
+    except Exception as e:
+        logger.warning(f"Rate limiting failed: {e}")
+        # Non bloccare la richiesta se il rate limiting fallisce
+
+# ================================
+# ENDPOINTS AGGIORNATI
+# ================================
 
 @router.post("/process", response_model=TextProcessingResponse)
 async def process_text(
@@ -134,16 +197,11 @@ async def process_text(
     """
     Start text processing task with OpenAI rate limiting
     """
-    # Applica rate limiting manualmente (il limiter è registrato nel main.py)
-    limiter = get_limiter(fastapi_request)
-    
-    # Rate limiting per utente/IP
-    await limiter.limit("30/minute")(fastapi_request)
-    
-    # Rate limiting globale per OpenAI
-    await limiter.limit("200/minute", key_func=get_global_key)(fastapi_request)
-    
     try:
+        # Applica rate limiting in modo sicuro
+        await apply_rate_limit_safe(fastapi_request, "30/minute")
+        await apply_rate_limit_safe(fastapi_request, "200/minute", key_func=get_global_key)
+        
         # Stima token prima del controllo quota
         estimated_tokens = estimate_tokens(request.text)
         
@@ -202,7 +260,7 @@ async def process_text(
         )
         
         # Log metrics per monitoring
-        user_id = get_user_id_or_ip(fastapi_request)
+        user_id = get_user_id_or_ip_safe(fastapi_request)
         logger.info(
             f"Text processing started - Task: {task_id}, "
             f"User: {user_id}, Text length: {len(request.text)}, "
@@ -234,11 +292,10 @@ async def get_task_status(
     """
     Get status of a text processing task
     """
-    # Rate limiting più permissivo per status check
-    limiter = get_limiter(fastapi_request)
-    await limiter.limit("120/minute")(fastapi_request)
-    
     try:
+        # Rate limiting più permissivo per status check
+        await apply_rate_limit_safe(fastapi_request, "120/minute")
+        
         # Get task result from Celery
         result = celery_app.AsyncResult(task_id)
         
@@ -298,10 +355,9 @@ async def get_task_result(
     """
     Get detailed result of a completed text processing task
     """
-    limiter = get_limiter(fastapi_request)
-    await limiter.limit("60/minute")(fastapi_request)
-    
     try:
+        await apply_rate_limit_safe(fastapi_request, "60/minute")
+        
         result = celery_app.AsyncResult(task_id)
         
         if not result:
@@ -336,10 +392,9 @@ async def cancel_task(
     """
     Cancel a pending or running task
     """
-    limiter = get_limiter(fastapi_request)
-    await limiter.limit("20/minute")(fastapi_request)
-    
     try:
+        await apply_rate_limit_safe(fastapi_request, "20/minute")
+        
         celery_app.control.revoke(task_id, terminate=True)
         
         logger.info(f"Task cancelled: {task_id}")
