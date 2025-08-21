@@ -1,8 +1,11 @@
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Request
 from typing import Dict, Any
 import uuid
 import logging
+import redis
 from datetime import datetime, timedelta
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.schemas.text_schemas import (
     TextProcessingRequest, 
@@ -14,29 +17,173 @@ from app.schemas.text_schemas import (
 from app.workers.tasks import process_text_task
 from app.core.celery_app import celery_app
 from app.services.openai_service import openai_service
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Setup Redis client per rate limiting
+try:
+    redis_client = redis.Redis.from_url(settings.redis_url, db=1, decode_responses=True)
+    redis_available = True
+except Exception as e:
+    redis_available = False
+    logger.warning(f"Redis not available for OpenAI rate limiting: {e}")
+
+# Rate limiter (viene registrato nel main.py)
+def get_user_id_or_ip(request: Request):
+    """Funzione per identificare l'utente"""
+    return get_remote_address(request)
+
+def get_global_key(request: Request):
+    """Chiave globale per rate limiting OpenAI"""
+    return "openai_global"
+
+async def check_openai_quota() -> tuple[bool, dict]:
+    """
+    Controlla se possiamo fare una chiamata OpenAI
+    Returns: (can_proceed, quota_info)
+    """
+    if not redis_available:
+        return True, {"status": "redis_unavailable"}
+    
+    try:
+        current_minute = datetime.utcnow().strftime("%Y%m%d%H%M")
+        
+        # Chiavi Redis per tracking
+        rpm_key = f"openai:rpm:{current_minute}"
+        tpm_key = f"openai:tpm:{current_minute}"
+        
+        # Recupera contatori attuali
+        current_rpm = int(redis_client.get(rpm_key) or 0)
+        current_tpm = int(redis_client.get(tpm_key) or 0)
+        
+        # Limiti conservativi (adatta ai tuoi tier OpenAI)
+        MAX_RPM = 450  # Sotto il limite di 500 per sicurezza
+        MAX_TPM = 80000  # Sotto il limite di 90k per sicurezza
+        
+        quota_info = {
+            "current_rpm": current_rpm,
+            "current_tpm": current_tpm,
+            "max_rpm": MAX_RPM,
+            "max_tpm": MAX_TPM,
+            "rpm_usage_percent": round((current_rpm / MAX_RPM) * 100, 2),
+            "tpm_usage_percent": round((current_tpm / MAX_TPM) * 100, 2)
+        }
+        
+        # Controlla se possiamo fare la richiesta
+        if current_rpm >= MAX_RPM:
+            logger.warning(f"OpenAI RPM limit reached: {current_rpm}/{MAX_RPM}")
+            return False, quota_info
+            
+        if current_tpm >= MAX_TPM:
+            logger.warning(f"OpenAI TPM limit reached: {current_tpm}/{MAX_TPM}")
+            return False, quota_info
+            
+        return True, quota_info
+        
+    except Exception as e:
+        logger.error(f"Error checking OpenAI quota: {e}")
+        return True, {"status": "error", "message": str(e)}
+
+async def track_openai_usage(estimated_tokens: int = 1000):
+    """Traccia l'utilizzo OpenAI in Redis"""
+    if not redis_available:
+        return
+        
+    try:
+        current_minute = datetime.utcnow().strftime("%Y%m%d%H%M")
+        
+        # Incrementa contatori
+        rpm_key = f"openai:rpm:{current_minute}"
+        tpm_key = f"openai:tpm:{current_minute}"
+        
+        # Incrementa RPM
+        redis_client.incr(rpm_key)
+        redis_client.expire(rpm_key, 60)  # Scade dopo 1 minuto
+        
+        # Incrementa TPM (stima)
+        redis_client.incrby(tpm_key, estimated_tokens)
+        redis_client.expire(tpm_key, 60)
+        
+        logger.info(f"OpenAI usage tracked: +1 request, +{estimated_tokens} tokens")
+        
+    except Exception as e:
+        logger.error(f"Error tracking OpenAI usage: {e}")
+
+def estimate_tokens(text: str) -> int:
+    """Stima approssimativa dei token per il testo"""
+    # Stima: 1 token ≈ 0.75 parole in inglese, un po' più in italiano
+    words = len(text.split())
+    estimated_tokens = int(words * 1.3)  # Moltiplicatore conservativo
+    
+    # Token minimi e massimi ragionevoli
+    return max(50, min(estimated_tokens, 4000))
+
+# Ottieni il limiter dall'app state (registrato nel main.py)
+def get_limiter(request: Request):
+    return request.app.state.limiter
+
 @router.post("/process", response_model=TextProcessingResponse)
 async def process_text(
     request: TextProcessingRequest,
+    fastapi_request: Request,
     background_tasks: BackgroundTasks,
     # current_user = Depends(get_current_user),  # Add auth later
 ):
     """
-    Start text processing task
+    Start text processing task with OpenAI rate limiting
     """
+    # Applica rate limiting manualmente (il limiter è registrato nel main.py)
+    limiter = get_limiter(fastapi_request)
+    
+    # Rate limiting per utente/IP
+    await limiter.limit("30/minute")(fastapi_request)
+    
+    # Rate limiting globale per OpenAI
+    await limiter.limit("200/minute", key_func=get_global_key)(fastapi_request)
+    
     try:
+        # Stima token prima del controllo quota
+        estimated_tokens = estimate_tokens(request.text)
+        
+        # Controlla quota OpenAI prima di procedere
+        can_proceed, quota_info = await check_openai_quota()
+        
+        if not can_proceed:
+            logger.warning(f"OpenAI quota exceeded: {quota_info}")
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "OpenAI rate limit",
+                    "message": "OpenAI API quota temporarily exceeded. Please try again in a moment.",
+                    "retry_after": 60,
+                    "quota_info": quota_info,
+                    "type": "openai_quota_exceeded"
+                }
+            )
+        
         # Generate task ID
         task_id = str(uuid.uuid4())
         
+        # Traccia l'utilizzo prima della chiamata
+        await track_openai_usage(estimated_tokens)
+        
         # Get text analysis for estimated completion time
-        analysis = await openai_service.get_text_analysis(request.text)
+        try:
+            analysis = await openai_service.get_text_analysis(request.text)
+        except Exception as openai_error:
+            logger.error(f"OpenAI service error: {openai_error}")
+            # Fallback se OpenAI non è disponibile
+            analysis = {
+                "estimated_processing_time": 30,  # Default fallback
+                "complexity": "medium"
+            }
+        
         estimated_completion = datetime.utcnow().replace(microsecond=0) + \
                              timedelta(seconds=analysis["estimated_processing_time"])
         
-        # Start Celery task
+        # Start Celery task con retry policy
         task = process_text_task.apply_async(
             args=[
                 request.text,
@@ -45,10 +192,23 @@ async def process_text(
                 request.options
             ],
             task_id=task_id,
-            queue="text_processing"
+            queue="text_processing",
+            retry_policy={
+                'max_retries': 3,
+                'interval_start': 5,
+                'interval_step': 10,
+                'interval_max': 60,
+            }
         )
         
-        logger.info(f"Started text processing task {task_id}")
+        # Log metrics per monitoring
+        user_id = get_user_id_or_ip(fastapi_request)
+        logger.info(
+            f"Text processing started - Task: {task_id}, "
+            f"User: {user_id}, Text length: {len(request.text)}, "
+            f"Est. tokens: {estimated_tokens}, "
+            f"OpenAI usage: {quota_info.get('rpm_usage_percent', 0):.1f}% RPM"
+        )
         
         return TextProcessingResponse(
             task_id=task_id,
@@ -57,6 +217,8 @@ async def process_text(
             estimated_completion=estimated_completion
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to start text processing task: {str(e)}")
         raise HTTPException(
@@ -65,10 +227,17 @@ async def process_text(
         )
 
 @router.get("/task/{task_id}", response_model=TaskStatusResponse)
-async def get_task_status(task_id: str):
+async def get_task_status(
+    task_id: str, 
+    fastapi_request: Request
+):
     """
     Get status of a text processing task
     """
+    # Rate limiting più permissivo per status check
+    limiter = get_limiter(fastapi_request)
+    await limiter.limit("120/minute")(fastapi_request)
+    
     try:
         # Get task result from Celery
         result = celery_app.AsyncResult(task_id)
@@ -122,10 +291,16 @@ async def get_task_status(task_id: str):
         )
 
 @router.get("/task/{task_id}/result", response_model=ProcessedTextResult)
-async def get_task_result(task_id: str):
+async def get_task_result(
+    task_id: str, 
+    fastapi_request: Request
+):
     """
     Get detailed result of a completed text processing task
     """
+    limiter = get_limiter(fastapi_request)
+    await limiter.limit("60/minute")(fastapi_request)
+    
     try:
         result = celery_app.AsyncResult(task_id)
         
@@ -154,12 +329,20 @@ async def get_task_result(task_id: str):
         )
 
 @router.delete("/task/{task_id}")
-async def cancel_task(task_id: str):
+async def cancel_task(
+    task_id: str, 
+    fastapi_request: Request
+):
     """
     Cancel a pending or running task
     """
+    limiter = get_limiter(fastapi_request)
+    await limiter.limit("20/minute")(fastapi_request)
+    
     try:
         celery_app.control.revoke(task_id, terminate=True)
+        
+        logger.info(f"Task cancelled: {task_id}")
         
         return {
             "message": f"Task {task_id} has been cancelled",
@@ -187,10 +370,39 @@ async def health_check():
         # Test OpenAI service
         openai_status = "ok" if openai_service else "not configured"
         
+        # Check Redis connection
+        redis_status = "ok" if redis_available else "not configured"
+        if redis_available:
+            try:
+                redis_client.ping()
+            except Exception:
+                redis_status = "error"
+        
+        # Check current OpenAI usage
+        quota_info = {}
+        if redis_available:
+            try:
+                current_minute = datetime.utcnow().strftime("%Y%m%d%H%M")
+                current_rpm = int(redis_client.get(f"openai:rpm:{current_minute}") or 0)
+                current_tpm = int(redis_client.get(f"openai:tpm:{current_minute}") or 0)
+                
+                quota_info = {
+                    "current_rpm": current_rpm,
+                    "current_tpm": current_tpm,
+                    "rpm_limit": 450,
+                    "tpm_limit": 80000,
+                    "rpm_usage_percent": round((current_rpm / 450) * 100, 2),
+                    "tpm_usage_percent": round((current_tpm / 80000) * 100, 2)
+                }
+            except Exception as e:
+                quota_info = {"error": str(e)}
+        
         return {
             "status": "healthy",
             "celery_workers": len(active_tasks) if active_tasks else 0,
             "openai_service": openai_status,
+            "redis_status": redis_status,
+            "openai_usage": quota_info,
             "timestamp": datetime.utcnow().isoformat()
         }
         
