@@ -22,6 +22,11 @@ google-auth-oauthlib==1.1.0
 google-auth-httplib2==0.1.1
 google-cloud-core==2.3.3
 
+# Email client
+aiosmtplib==3.0.1 
+jinja2==3.1.4 
+MarkupSafe==2.1.3
+
 # Redis and task queue
 redis==5.0.1
 celery==5.3.4
