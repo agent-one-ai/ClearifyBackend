@@ -21,7 +21,7 @@ from email.encoders import encode_base64
 
 # Jinja2 import con error handling
 try:
-    from jinja2 import Environment, FileSystemLoader, select_autoescape
+    from jinja2 import Environment, FileSystemLoader, select_autoescape, Template
     JINJA_AVAILABLE = True
 except ImportError:
     JINJA_AVAILABLE = False
@@ -39,20 +39,6 @@ class EmailService:
         self.sender_email = getattr(self.settings, 'EMAIL_HOST_USER', 'noreply@clearify.com')
         self.sender_password = getattr(self.settings, 'EMAIL_HOST_PASSWORD', '')
         self.use_tls = getattr(self.settings, 'EMAIL_USE_TLS', True)
-        
-        # Setup Jinja2 se disponibile
-        if JINJA_AVAILABLE:
-            template_dir = Path(__file__).parent.parent / "templates" / "emails"
-            if template_dir.exists():
-                self.jinja_env = Environment(
-                    loader=FileSystemLoader(str(template_dir)),
-                    autoescape=select_autoescape(['html', 'xml'])
-                )
-            else:
-                self.jinja_env = None
-                logger.warning(f"Email template directory not found: {template_dir}")
-        else:
-            self.jinja_env = None
 
     def send_email_sync(
         self,
@@ -170,7 +156,7 @@ class EmailService:
                         'failed_at': datetime.now().isoformat(),
                         'error_message': str(e),
                         'retry_count': 0,
-                        'next_retry_at': datetime.now().isoformat()  # Per retry immediato
+                        'next_retry_at': datetime.now().isoformat()
                     }).eq('id', email_queue_id).execute()
                     
                 except Exception as db_error:
@@ -238,42 +224,28 @@ class EmailService:
         except Exception as e:
             logger.warning(f"⚠️ Failed to add attachment {attachment['filename']}: {str(e)}")
 
-    def render_template(self, template_name: str, context: Dict) -> tuple[str, str]:
+    # 🔥 NUOVO METODO: Renderizza template e soggetto da database
+    def render_template_and_subject(self, template_name: str, context: Dict) -> tuple[str, str, str]:
         """
-        Renderizza template con priorità: Database > File > Hardcoded
+        Renderizza template HTML, testo e soggetto dal database
+        Returns: (rendered_subject, rendered_html, rendered_text)
         """
         try:
-            # 1️⃣ PROVA PRIMA DAL DATABASE SUPABASE
+            # 1️⃣ RECUPERA TEMPLATE DAL DATABASE
             db_template = self._get_template_from_database(template_name)
-            if db_template:
-                logger.info(f"📄 Using database template: {template_name}")
-                return self._render_database_template(db_template, context)
             
-            # 2️⃣ PROVA DA FILE JINJA2
-            # if JINJA_AVAILABLE and self.jinja_env:
-            #     try:
-            #         html_template = self.jinja_env.get_template(f"{template_name}.html")
-            #         html_content = html_template.render(**context)
-                    
-            #         try:
-            #             text_template = self.jinja_env.get_template(f"{template_name}.txt")
-            #             text_content = text_template.render(**context)
-            #         except Exception:
-            #             text_content = None
-                    
-            #         logger.info(f"📁 Using file template: {template_name}")
-            #         return html_content, text_content
-                    
-            #     except Exception as template_error:
-            #         logger.warning(f"File template failed: {template_error}")
+            if not db_template:
+                logger.error(f"❌ Template '{template_name}' not found in database")
+                return self._get_fallback_template(template_name, context)
             
-            # 3️⃣ FALLBACK: TEMPLATE HARDCODED
-            # logger.info(f"🔧 Using hardcoded template: {template_name}")
-            # return self._get_default_template(template_name, context)
+            logger.info(f"📄 Using database template: {template_name} v{db_template.get('version', '1.0')}")
+            
+            # 2️⃣ RENDERIZZA TUTTI I COMPONENTI
+            return self._render_database_template_complete(db_template, context)
                 
         except Exception as e:
-            logger.warning(f"Template system error: {str(e)}")
-            return self._get_default_template(template_name, context)
+            logger.error(f"❌ Template rendering error for '{template_name}': {str(e)}")
+            return self._get_fallback_template(template_name, context)
     
     def _get_template_from_database(self, template_name: str) -> Optional[Dict]:
         """Recupera template dal database Supabase"""
@@ -288,246 +260,160 @@ class EmailService:
             
             if result.data and len(result.data) > 0:
                 template_data = result.data[0]
-                logger.info(f"Found database template: {template_name} v{template_data.get('version', '1.0')}")
+                logger.info(f"✅ Found database template: {template_name} v{template_data.get('version', '1.0')}")
                 return template_data
             
+            logger.warning(f"⚠️ Template '{template_name}' not found in database")
             return None
             
         except Exception as e:
-            logger.warning(f"Failed to fetch template from database: {str(e)}")
+            logger.error(f"❌ Failed to fetch template '{template_name}' from database: {str(e)}")
             return None
     
-    def _render_database_template(self, template_data: Dict, context: Dict) -> tuple[str, str]:
-        """Renderizza template dal database usando Jinja2"""
+    def _render_database_template_complete(self, template_data: Dict, context: Dict) -> tuple[str, str, str]:
+        """Renderizza subject, HTML e text template dal database usando Jinja2"""
         try:
-            if JINJA_AVAILABLE:
-                from jinja2 import Template
+            if not JINJA_AVAILABLE:
+                logger.warning("⚠️ Jinja2 not available - using fallback")
+                return self._get_fallback_template(template_data['name'], context)
+            
+            # 🔥 RENDERIZZA SOGGETTO (sempre obbligatorio)
+            if not template_data.get('subject_template'):
+                raise ValueError(f"Missing subject_template for template: {template_data['name']}")
                 
-                # HTML template  
-                html_template = Template(template_data['html_template'])
-                rendered_html = html_template.render(**context)
+            subject_template = Template(template_data['subject_template'])
+            rendered_subject = subject_template.render(**context)
+            
+            # 🔥 RENDERIZZA HTML (sempre obbligatorio)
+            if not template_data.get('html_template'):
+                raise ValueError(f"Missing html_template for template: {template_data['name']}")
                 
-                # Text template (opzionale)
-                rendered_text = None
-                if template_data.get('text_template'):
-                    text_template = Template(template_data['text_template'])
-                    rendered_text = text_template.render(**context)
-                
-                return rendered_html, rendered_text
-            else:
-                # Se Jinja2 non è disponibile, usa template hardcoded
-                logger.warning("Jinja2 not available for database template rendering")
-                return self._get_default_template(template_data['name'], context)
+            html_template = Template(template_data['html_template'])
+            rendered_html = html_template.render(**context)
+            
+            # 🔥 RENDERIZZA TEXT (opzionale)
+            rendered_text = None
+            if template_data.get('text_template'):
+                text_template = Template(template_data['text_template'])
+                rendered_text = text_template.render(**context)
+            
+            logger.info(f"✅ Template rendered successfully: {template_data['name']}")
+            return rendered_subject, rendered_html, rendered_text
             
         except Exception as e:
-            logger.error(f"Failed to render database template: {str(e)}")
-            return self._get_default_template(template_data['name'], context)
+            logger.error(f"❌ Failed to render database template: {str(e)}")
+            return self._get_fallback_template(template_data['name'], context)
 
-    def _get_default_template(self, template_name: str, context: Dict) -> tuple[str, str]:
-        """Template di fallback hardcoded - SEMPRE funziona"""
-        
-        # Valori di default per evitare errori
-        customer_name = context.get('customer_name', context.get('recipient_email', 'Cliente').split('@')[0])
-        plan_type = context.get('plan_type', 'Premium').title()
-        amount = context.get('amount', 0)
-        payment_date = context.get('payment_date', datetime.now().strftime("%d/%m/%Y %H:%M"))
-        payment_intent_id = context.get('payment_intent_id', 'N/A')
+    def _get_fallback_template(self, template_name: str, context: Dict) -> tuple[str, str, str]:
+        """Template di fallback hardcoded quando il database non è disponibile"""
         
         if template_name == "payment_confirmation":
-            # Converti amount da centesimi a euro se necessario
-            amount_euro = amount / 100 if amount > 100 else amount
-            
-            html = f"""
-<!DOCTYPE html>
-<html lang="it">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Conferma Pagamento - Clearify</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f3f4f6;">
-    <div style="max-width: 600px; margin: 20px auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-        
-        <!-- Header -->
-        <div style="background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; padding: 30px; text-align: center;">
-            <h1 style="margin: 0; font-size: 28px;">🎉 Pagamento Confermato!</h1>
-            <p style="margin: 10px 0 0 0; opacity: 0.9; font-size: 16px;">Grazie per aver scelto Clearify Premium</p>
-        </div>
-        
-        <!-- Content -->
-        <div style="padding: 30px;">
-            <div style="text-align: center; font-size: 48px; margin: 20px 0;">✅</div>
-            
-            <p style="font-size: 16px; line-height: 1.6;">Ciao <strong>{customer_name}</strong>,</p>
-            
-            <p style="font-size: 16px; line-height: 1.6;">Il tuo pagamento è stato elaborato con successo! Il tuo abbonamento Clearify Premium è ora attivo.</p>
-            
-            <!-- Order Details -->
-            <div style="background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #2563eb;">
-                <h3 style="margin: 0 0 15px 0; color: #1e40af; font-size: 18px;">📋 Dettagli dell'ordine</h3>
-                <table style="width: 100%; border-collapse: collapse;">
-                    <tr>
-                        <td style="padding: 8px 0; font-weight: 500;">Piano:</td>
-                        <td style="padding: 8px 0;">{plan_type}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 8px 0; font-weight: 500;">Importo:</td>
-                        <td style="padding: 8px 0; font-size: 20px; font-weight: bold; color: #059669;">€{amount_euro:.2f}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 8px 0; font-weight: 500;">Data pagamento:</td>
-                        <td style="padding: 8px 0;">{payment_date}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 8px 0; font-weight: 500;">ID Transazione:</td>
-                        <td style="padding: 8px 0; font-family: monospace; font-size: 12px; color: #6b7280;">{payment_intent_id}</td>
-                    </tr>
-                </table>
-            </div>
-            
-            <h3 style="color: #1f2937; margin: 25px 0 15px 0;">Cosa puoi fare ora:</h3>
-            <ul style="font-size: 15px; line-height: 1.7;">
-                <li>✨ <strong>Accesso completo</strong> a tutte le funzionalità premium</li>
-                <li>🚀 <strong>Elaborazione testi illimitata</strong> con AI avanzata</li>
-                <li>💬 <strong>Supporto prioritario</strong> dal nostro team</li>
-                <li>📊 <strong>Analytics dettagliate</strong> sui tuoi progetti</li>
-            </ul>
-            
-            <div style="text-align: center; margin: 30px 0;">
-                <a href="https://clearify.com/dashboard" style="display: inline-block; background: #2563eb; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px;">
-                    Inizia subito 🚀
-                </a>
-            </div>
-            
-            <div style="background: #fffbeb; border: 1px solid #fcd34d; padding: 15px; border-radius: 6px; margin: 20px 0;">
-                <p style="margin: 0; font-size: 14px; color: #92400e;">
-                    💡 <strong>Suggerimento:</strong> Salva questa email come conferma del tuo acquisto per future referenze.
-                </p>
-            </div>
-            
-            <p style="font-size: 14px; color: #6b7280; margin: 25px 0 0 0;">
-                Se hai domande o problemi, il nostro team di supporto è sempre disponibile all'indirizzo 
-                <a href="mailto:support@clearify.com" style="color: #2563eb;">support@clearify.com</a>
-            </p>
-        </div>
-        
-        <!-- Footer -->
-        <div style="background: #f8fafc; padding: 20px; text-align: center; border-top: 1px solid #e5e7eb;">
-            <p style="margin: 0; font-size: 14px; color: #6b7280;"><strong>Clearify</strong> - Il tuo assistente AI per l'elaborazione testi</p>
-            <p style="margin: 5px 0 0 0; font-size: 12px; color: #9ca3af;">
-                <a href="https://clearify.com" style="color: #6b7280; text-decoration: none;">clearify.com</a> | 
-                <a href="mailto:support@clearify.com" style="color: #6b7280; text-decoration: none;">support@clearify.com</a>
-            </p>
-        </div>
-    </div>
-</body>
-</html>
+            subject = "✅ Pagamento confermato - Abbonamento {{plan_type}}"
+            html_body = """
+            <!DOCTYPE html>
+            <html>
+            <head><meta charset="UTF-8"><title>Pagamento Confermato</title></head>
+            <body style="font-family: Arial, sans-serif; padding: 20px; background-color: #f3f4f6;">
+                <div style="max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; padding: 30px;">
+                    <h1 style="color: #059669; margin: 0 0 20px 0;">Pagamento Confermato!</h1>
+                    <p>Ciao <strong>{{customer_name}}</strong>,</p>
+                    <p>Il tuo pagamento per l'abbonamento <strong>{{plan_type}}</strong> è stato elaborato con successo.</p>
+                    
+                    <div style="background: #f0fdf4; padding: 20px; border-radius: 6px; margin: 20px 0;">
+                        <p><strong>Piano:</strong> {{plan_type}}</p>
+                        <p><strong>Importo:</strong> €{{amount}}</p>
+                        <p><strong>Data:</strong> {{payment_date}}</p>
+                        <p><strong>ID Transazione:</strong> {{payment_intent_id}}</p>
+                    </div>
+                    
+                    <p style="font-size: 14px; color: #6b7280;">
+                        Grazie per aver scelto Clearify!<br>
+                        Supporto: <a href="mailto:support@clearify.com">support@clearify.com</a>
+                    </p>
+                </div>
+            </body>
+            </html>
             """
-            
-            text = f"""
-CONFERMA PAGAMENTO - CLEARIFY
-============================
+            text_body = """
+Pagamento Confermato!
 
-Ciao {customer_name},
+Ciao {{customer_name}},
 
-Il tuo pagamento è stato elaborato con successo! 
-Il tuo abbonamento Clearify Premium è ora attivo.
+Il tuo pagamento per l'abbonamento {{plan_type}} è stato elaborato con successo.
 
-DETTAGLI DELL'ORDINE:
----------------------
-🔹 Piano: {plan_type}
-🔹 Importo: €{amount_euro:.2f}
-🔹 Data: {payment_date}
-🔹 ID Transazione: {payment_intent_id}
-
-COSA PUOI FARE ORA:
--------------------
-✨ Accesso completo a tutte le funzionalità premium
-🚀 Elaborazione di testi illimitata con AI avanzata
-💬 Supporto prioritario dal nostro team
-📊 Analytics dettagliate sui tuoi progetti
-
-Inizia subito: https://clearify.com/dashboard
-
-Per domande: support@clearify.com
+Dettagli:
+- Piano: {{plan_type}}
+- Importo: €{{amount}}
+- Data: {{payment_date}}
+- ID Transazione: {{payment_intent_id}}
 
 Grazie per aver scelto Clearify!
-Il team di Clearify
-
----
-Clearify - Il tuo assistente AI per l'elaborazione testi
-https://clearify.com
+Supporto: support@clearify.com
             """
-            
-            return html, text
             
         elif template_name == "subscription_expiring":
-            end_date = context.get('end_date', 'Presto')
-            subscription_id = context.get('subscription_id', 'N/A')
-            
-            html = f"""
-<!DOCTYPE html>
-<html lang="it">
-<head>
-    <meta charset="UTF-8">
-    <title>Rinnovo Abbonamento - Clearify</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f3f4f6;">
-    <div style="max-width: 600px; margin: 20px auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-        
-        <div style="background: linear-gradient(135deg, #dc2626, #b91c1c); color: white; padding: 30px; text-align: center;">
-            <h1 style="margin: 0; font-size: 24px;">⏰ Il tuo abbonamento sta scadendo</h1>
-        </div>
-        
-        <div style="padding: 30px;">
-            <div style="background: #fef2f2; border: 1px solid #fecaca; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                <p style="margin: 0; font-weight: 500; color: #dc2626; font-size: 16px;">
-                    Il tuo abbonamento <strong>{plan_type}</strong> scadrà il <strong>{end_date}</strong>
-                </p>
-            </div>
-            
-            <p style="font-size: 16px; line-height: 1.6;">Per continuare a utilizzare tutte le funzionalità premium di Clearify, rinnova il tuo abbonamento prima della scadenza.</p>
-            
-            <div style="text-align: center; margin: 30px 0;">
-                <a href="https://clearify.com/checkout?renewal=true&sub_id={subscription_id}" 
-                   style="display: inline-block; background: #dc2626; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px;">
-                    Rinnova ora 🔄
-                </a>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
+            subject = "⚠️ Il tuo abbonamento Clearify scade presto"
+            html_body = """
+            <!DOCTYPE html>
+            <html>
+            <head><meta charset="UTF-8"><title>Abbonamento in Scadenza</title></head>
+            <body style="font-family: Arial, sans-serif; padding: 20px; background-color: #f3f4f6;">
+                <div style="max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; padding: 30px;">
+                    <h1 style="color: #d97706; margin: 0 0 20px 0;">Il tuo abbonamento sta scadendo</h1>
+                    <p>Il tuo abbonamento <strong>{{plan_type}}</strong> scadrà il <strong>{{end_date}}</strong>.</p>
+                    <p>Rinnova ora per continuare a usare tutte le funzionalità premium.</p>
+                    
+                    <div style="text-align: center; margin: 30px 0;">
+                        <a href="https://clearify.com/checkout" 
+                           style="display: inline-block; background: #059669; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 500;">
+                            Rinnova Abbonamento
+                        </a>
+                    </div>
+                </div>
+            </body>
+            </html>
             """
-            
-            text = f"""
-IL TUO ABBONAMENTO STA SCADENDO
-==============================
+            text_body = """
+Il tuo abbonamento sta scadendo
 
-Il tuo abbonamento {plan_type} scadrà il {end_date}.
+Il tuo abbonamento {{plan_type}} scadrà il {{end_date}}.
+Rinnova ora per continuare a usare tutte le funzionalità premium.
 
-Per continuare a utilizzare Clearify Premium, rinnova ora:
-https://clearify.com/checkout?renewal=true&sub_id={subscription_id}
-
-Il team di Clearify
+Rinnova su: https://clearify.com/checkout
             """
-            
-            return html, text
-            
-        # Template di fallback generico
-        html = f"""
-        <html>
-        <body style="font-family: Arial, sans-serif; padding: 20px;">
-            <h2>Clearify</h2>
-            <p>Grazie per aver utilizzato Clearify!</p>
-            <p>Template: {template_name}</p>
-        </body>
-        </html>
-        """
-        text = f"Clearify - Template: {template_name}"
         
-        return html, text
+        else:
+            # Template generico
+            subject = "Notifica da Clearify"
+            html_body = "<p>Template non trovato per: " + template_name + "</p>"
+            text_body = "Template non trovato per: " + template_name
+        
+        # Renderizza con Jinja2 se disponibile, altrimenti simple replace
+        if JINJA_AVAILABLE:
+            try:
+                subject_template = Template(subject)
+                html_template = Template(html_body)
+                text_template = Template(text_body) if text_body else None
+                
+                rendered_subject = subject_template.render(**context)
+                rendered_html = html_template.render(**context)
+                rendered_text = text_template.render(**context) if text_template else None
+                
+                return rendered_subject, rendered_html, rendered_text
+            except:
+                pass
+        
+        # Fallback senza Jinja2 - simple string replace
+        for key, value in context.items():
+            placeholder = "{{" + key + "}}"
+            subject = subject.replace(placeholder, str(value))
+            html_body = html_body.replace(placeholder, str(value))
+            if text_body:
+                text_body = text_body.replace(placeholder, str(value))
+        
+        return subject, html_body, text_body
 
+    # 🔥 METODI AGGIORNATI CON NUOVO SISTEMA
     def send_subscription_expiring_email(
         self,
         to_email: str,
@@ -545,11 +431,12 @@ Il team di Clearify
                 'subscription_id': subscription_id
             }
             
-            html_body, text_body = self.render_template("subscription_expiring", context)
+            # 🔥 USA NUOVO METODO CHE INCLUDE SUBJECT
+            subject, html_body, text_body = self.render_template_and_subject("subscription_expiring", context)
             
             return self.send_email_sync(
                 to_email=to_email,
-                subject="Il tuo abbonamento Clearify sta scadendo",
+                subject=subject,  # 🔥 SOGGETTO DAL DATABASE
                 html_body=html_body,
                 text_body=text_body,
                 email_type="subscription_expiring",
@@ -561,7 +448,7 @@ Il team di Clearify
             )
             
         except Exception as e:
-            logger.error(f"Error in send_subscription_expiring_email_service: {str(e)}")
+            logger.error(f"Error in send_subscription_expiring_email: {str(e)}")
             return False
 
     def send_payment_failed_email_service(
@@ -575,44 +462,20 @@ Il team di Clearify
         Metodo del servizio per inviare email di pagamento fallito
         """
         try:
-            html_body = f"""
-<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Problema Pagamento</title></head>
-<body style="font-family: Arial, sans-serif; padding: 20px; background-color: #f3f4f6;">
-    <div style="max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; padding: 30px;">
-        <h1 style="color: #dc2626; margin: 0 0 20px 0;">Problema con il pagamento</h1>
-        
-        <p>Ciao,</p>
-        
-        <p>Abbiamo riscontrato un problema durante l'elaborazione del tuo pagamento per l'abbonamento <strong>{plan_type}</strong>.</p>
-        
-        <div style="background: #fef2f2; padding: 15px; border-radius: 6px; margin: 20px 0;">
-            <p style="margin: 0;"><strong>ID Transazione:</strong> {payment_intent_id}</p>
-            {f'<p style="margin: 5px 0 0 0;"><strong>Errore:</strong> {error_message}</p>' if error_message else ''}
-        </div>
-        
-        <p>Ti consigliamo di riprovare o di contattare il nostro supporto se il problema persiste.</p>
-        
-        <div style="text-align: center; margin: 30px 0;">
-            <a href="https://clearify.com/checkout" 
-               style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 500;">
-                Riprova Pagamento
-            </a>
-        </div>
-        
-        <p style="font-size: 14px; color: #6b7280;">
-            Supporto: <a href="mailto:support@clearify.com">support@clearify.com</a>
-        </p>
-    </div>
-</body>
-</html>
-            """
+            context = {
+                'plan_type': plan_type,
+                'payment_intent_id': payment_intent_id,
+                'error_message': error_message
+            }
+            
+            # 🔥 USA TEMPLATE DA DATABASE
+            subject, html_body, text_body = self.render_template_and_subject("payment_failed", context)
             
             return self.send_email_sync(
                 to_email=to_email,
-                subject="Problema con il tuo pagamento - Clearify",
+                subject=subject,  # 🔥 SOGGETTO DAL DATABASE
                 html_body=html_body,
+                text_body=text_body,
                 email_type="payment_failed",
                 payment_intent_id=payment_intent_id,
                 metadata={
@@ -625,7 +488,7 @@ Il team di Clearify
             logger.error(f"Error in send_payment_failed_email_service: {str(e)}")
             return False
 
-# 🔥 FUNZIONI UTILITY AGGIORNATE con tracking Supabase
+# 🔥 FUNZIONI UTILITY AGGIORNATE con template da database
 def send_payment_confirmation_email(
     to_email: str,
     plan_type: str,
@@ -634,7 +497,7 @@ def send_payment_confirmation_email(
     customer_name: str = ""
 ) -> bool:
     """
-    Funzione di utilità per inviare email di conferma pagamento con tracking Supabase
+    Funzione di utilità per inviare email di conferma pagamento con template da database
     """
     try:
         email_service = EmailService()
@@ -648,18 +511,18 @@ def send_payment_confirmation_email(
             'payment_intent_id': payment_intent_id,
         }
         
-        # Renderizza template
-        html_body, text_body = email_service.render_template("payment_confirmation", context)
+        # 🔥 RENDERIZZA TEMPLATE E SOGGETTO DAL DATABASE
+        subject, html_body, text_body = email_service.render_template_and_subject("payment_confirmation", context)
         
         # 🔥 INVIA EMAIL con tracking completo
         success = email_service.send_email_sync(
             to_email=to_email,
-            subject=f"✅ Conferma pagamento - Abbonamento {plan_type.title()}",
+            subject=subject,  # 🔥 SOGGETTO DAL DATABASE
             html_body=html_body,
             text_body=text_body,
-            email_type="payment_confirmation",  # 🔥 NUOVO
-            payment_intent_id=payment_intent_id,  # 🔥 NUOVO
-            metadata={  # 🔥 NUOVO
+            email_type="payment_confirmation",
+            payment_intent_id=payment_intent_id,
+            metadata={
                 'plan_type': plan_type,
                 'amount_euros': amount / 100,
                 'customer_name': customer_name
@@ -672,23 +535,57 @@ def send_payment_confirmation_email(
         logger.error(f"❌ Error in send_payment_confirmation_email: {str(e)}")
         return False
 
-# 🔥 FUNZIONI HELPER PER GESTIRE EMAIL DATABASE
-def get_failed_emails_for_retry(limit: int = 50) -> List[Dict]:
-    """Recupera email fallite da ritentare"""
+# 🔥 NUOVA FUNZIONE: Gestione template database
+def create_or_update_email_template(
+    name: str,
+    subject_template: str,
+    html_template: str,
+    text_template: Optional[str] = None,
+    version: str = "1.0",
+    is_active: bool = True
+) -> bool:
+    """
+    Crea o aggiorna un template email nel database
+    """
     try:
-        result = supabase_client.table('email_queue')\
-            .select('*')\
-            .eq('status', 'failed')\
-            .lte('retry_count', 3)\
-            .order('created_at', desc=False)\
-            .limit(limit)\
+        # Controlla se esiste già
+        existing = supabase_client.table('email_templates')\
+            .select('id')\
+            .eq('name', name)\
+            .eq('version', version)\
             .execute()
         
-        return result.data or []
+        template_data = {
+            'name': name,
+            'subject_template': subject_template,
+            'html_template': html_template,
+            'text_template': text_template,
+            'version': version,
+            'is_active': is_active,
+            'updated_at': datetime.now().isoformat()
+        }
+        
+        if existing.data:
+            # Aggiorna esistente
+            result = supabase_client.table('email_templates')\
+                .update(template_data)\
+                .eq('name', name)\
+                .eq('version', version)\
+                .execute()
+            logger.info(f"✅ Updated email template: {name} v{version}")
+        else:
+            # Crea nuovo
+            template_data['created_at'] = datetime.now().isoformat()
+            result = supabase_client.table('email_templates')\
+                .insert(template_data)\
+                .execute()
+            logger.info(f"✅ Created new email template: {name} v{version}")
+        
+        return True
         
     except Exception as e:
-        logger.error(f"Error fetching failed emails: {str(e)}")
-        return []
+        logger.error(f"❌ Error creating/updating template '{name}': {str(e)}")
+        return False
 
 def get_email_statistics(days: int = 7) -> Dict:
     """Ottieni statistiche email degli ultimi N giorni"""
@@ -730,77 +627,5 @@ def get_email_statistics(days: int = 7) -> Dict:
         logger.error(f"Error getting email statistics: {str(e)}")
         return {'total': 0, 'sent': 0, 'failed': 0, 'pending': 0, 'success_rate': 0}
 
-def cleanup_old_emails(days: int = 30) -> int:
-    """Pulisce email vecchie inviate con successo"""
-    try:
-        from datetime import timedelta
-        cutoff_date = datetime.now() - timedelta(days=days)
-        
-        result = supabase_client.table('email_queue')\
-            .delete()\
-            .eq('status', 'sent')\
-            .lt('sent_at', cutoff_date.isoformat())\
-            .execute()
-        
-        deleted_count = len(result.data) if result.data else 0
-        logger.info(f"🗑️ Cleaned up {deleted_count} old emails")
-        
-        return deleted_count
-        
-    except Exception as e:
-        logger.error(f"Error cleaning up emails: {str(e)}")
-        return 0
-
 # Istanza globale del servizio
 email_service = EmailService()
-
-# SCRIPT PER GESTIRE EMAIL FALLITE
-def retry_failed_emails_from_database():
-    """Script per ritentare email fallite salvate nel database"""
-    try:
-        failed_emails = get_failed_emails_for_retry(limit=10)
-        
-        if not failed_emails:
-            logger.info("No failed emails to retry")
-            return 0
-        
-        retry_count = 0
-        success_count = 0
-        
-        for email_record in failed_emails:
-            try:
-                email_service = EmailService()
-                
-                # Riprova invio
-                success = email_service.send_email_sync(
-                    to_email=email_record['recipient_email'],
-                    subject=email_record['subject'],
-                    html_body=email_record['html_body'],
-                    text_body=email_record.get('text_body'),
-                    email_type=email_record['email_type'],
-                    payment_intent_id=email_record.get('payment_intent_id'),
-                    subscription_id=email_record.get('subscription_id'),
-                    metadata=email_record.get('metadata', {})
-                )
-                
-                if success:
-                    success_count += 1
-                    logger.info(f"Email retry successful: {email_record['recipient_email']}")
-                else:
-                    # Incrementa retry count
-                    supabase_client.table('email_queue').update({
-                        'retry_count': email_record['retry_count'] + 1,
-                        'last_attempt_at': datetime.now().isoformat()
-                    }).eq('id', email_record['id']).execute()
-                
-                retry_count += 1
-                
-            except Exception as e:
-                logger.error(f"Error retrying email {email_record['id']}: {str(e)}")
-        
-        logger.info(f"Email retry completed: {success_count}/{retry_count} successful")
-        return success_count
-        
-    except Exception as e:
-        logger.error(f"Error in retry_failed_emails_from_database: {str(e)}")
-        return 0

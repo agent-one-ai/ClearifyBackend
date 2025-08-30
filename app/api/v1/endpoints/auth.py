@@ -405,114 +405,162 @@ async def google_callback(request: Request):
 
 @router.post("/login")
 async def login_user(login_data: UserLoginRequest, request: Request):
-    """Login con cookie httpOnly HTTPS"""
+    """Login con cookie httpOnly HTTPS - CORRETTO"""
     start_time = time.time()
     user_id = None
     
     debug_request_info(request)
     
     try:
+        print(f"DEBUG: Starting login for {login_data.email}")
+        
+        # Trova utente
         user_result = supabase_client.table("users").select("*").eq("email", login_data.email).execute()
         if not user_result.data:
-            await log_security_event(
-                supabase_client=supabase_client,
-                event="login_failure_user_not_found",
-                client_ip=api_logger._get_client_ip(request),
-                details=f"Email: {login_data.email}"
-            )
+            try:
+                await log_security_event(
+                    supabase_client=supabase_client,
+                    event="login_fail",  # Accorciato
+                    client_ip=api_logger._get_client_ip(request),
+                    details=f"Email: {login_data.email}"
+                )
+            except Exception as log_error:
+                print(f"WARNING: Failed to log security event: {str(log_error)}")
+                
             raise HTTPException(status_code=401, detail="Email o password non corretti")
         
         user_record = user_result.data[0]
         user_id = user_record["id"]
         
+        print(f"DEBUG: User found: {user_record['email']}")
+        
+        # Verifica che abbia password (non sia account Google)
         if not user_record.get("password_hash"):
-            await log_security_event(
-                supabase_client=supabase_client,
-                event="login_failure_google_user",
-                client_ip=api_logger._get_client_ip(request),
-                details=f"Email: {login_data.email}",
-                user_id=user_id
-            )
+            try:
+                await log_security_event(
+                    supabase_client=supabase_client,
+                    event="google_acc",  # Accorciato
+                    client_ip=api_logger._get_client_ip(request),
+                    details=f"Email: {login_data.email}",
+                    user_id=user_id
+                )
+            except Exception as log_error:
+                print(f"WARNING: Failed to log security event: {str(log_error)}")
+                
             raise HTTPException(status_code=401, detail="Questo account utilizza Google OAuth. Usa il login con Google.")
         
+        print(f"DEBUG: Verifying password")
         if not verify_password(login_data.password, user_record["password_hash"]):
-            await log_security_event(
-                supabase_client=supabase_client,
-                event="login_failure_wrong_password",
-                client_ip=api_logger._get_client_ip(request),
-                details=f"Email: {login_data.email}",
-                user_id=user_id
-            )
+            try:
+                await log_security_event(
+                    supabase_client=supabase_client,
+                    event="wrong_pwd",  # Accorciato
+                    client_ip=api_logger._get_client_ip(request),
+                    details=f"Email: {login_data.email}",
+                    user_id=user_id
+                )
+            except Exception as log_error:
+                print(f"WARNING: Failed to log security event: {str(log_error)}")
+                
             raise HTTPException(status_code=401, detail="Email o password non corretti")
 
+        print(f"DEBUG: Password verified, updating user")
         # Aggiorna last login con UTC corretto
         supabase_client.table("users").update({"updated_at": get_utc_now()}).eq("id", user_id).execute()
         
-        # Crea i token
+        print(f"DEBUG: Creating tokens")
+        # Crea token
         access_token = create_access_token({"sub": user_record["email"], "user_id": user_id})
         refresh_token = create_refresh_token({"sub": user_record["email"], "user_id": user_id})
         
-        # Rimuovi dati sensibili
-        user_record.pop("password_hash", None)
+        # Prepara dati utente - SERIALIZZA DATETIME
+        user_record_clean = user_record.copy()
+        user_record_clean.pop("password_hash", None)
+        user_record_serialized = serialize_datetime_fields(user_record_clean)
         
-        # Crea risposta
+        print(f"DEBUG: Creating response")
+        # Crea risposta con dati serializzati
         response_data = {
-            "user": UserResponse(**user_record).dict(),
+            "user": user_record_serialized,  # Usa dati serializzati invece di UserResponse().dict()
             "message": "Login completato con successo"
         }
         
         response = JSONResponse(content=response_data)
         set_auth_cookies(response, access_token, refresh_token)
         
-        # Logging
-        process_time = (time.time() - start_time) * 1000
-        await api_logger.log_api_call(
-            request=request,
-            response_time=process_time,
-            user_id=user_id,
-            additional_data={"action": "user_login", "email": login_data.email}
-        )
+        # Logging con gestione errori
+        try:
+            print(f"DEBUG: Logging API call")
+            process_time = (time.time() - start_time) * 1000
+            await api_logger.log_api_call(
+                request=request,
+                response_time=process_time,
+                user_id=user_id,
+                additional_data={
+                    "action": "login",  # Accorciato
+                    "email": login_data.email[:50]  # Limita lunghezza
+                }
+            )
+            print(f"DEBUG: API call logged successfully")
+        except Exception as log_error:
+            print(f"WARNING: Failed to log login: {str(log_error)}")
         
-        if os.getenv("DEBUG", "false").lower() == "true":
-            print(f"✅ Login successful for {login_data.email}")
-        
+        print(f"DEBUG: Login completed successfully for {login_data.email}")
         return response
         
     except HTTPException:
+        # Re-raise HTTPException senza modifiche
         raise
     except Exception as e:
-        process_time = (time.time() - start_time) * 1000
-        await api_logger.log_api_call(
-            request=request,
-            response_time=process_time,
-            user_id=user_id,
-            error=str(e)
-        )
+        print(f"ERROR: Login failed for {login_data.email}: {str(e)}")
+        print(f"ERROR: Exception type: {type(e).__name__}")
+        
+        # Logging sicuro per errori
+        try:
+            process_time = (time.time() - start_time) * 1000
+            await api_logger.log_api_call(
+                request=request,
+                response_time=process_time,
+                user_id=user_id,
+                error=str(e)[:200]  # Tronca errore lungo
+            )
+        except Exception as log_error:
+            print(f"WARNING: Failed to log error: {str(log_error)}")
+            
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
 @router.post("/register")
 async def register_user(user_data: UserRegisterRequest, request: Request):
-    """Registrazione con cookie httpOnly HTTPS"""
+    """Registrazione con cookie httpOnly HTTPS - CORRETTO"""
     start_time = time.time()
     user_id = None
     
     debug_request_info(request)
     
     try:
+        print(f"DEBUG: Starting registration for {user_data.email}")
+        
+        # Controlla se utente esiste già
         existing_user = supabase_client.table("users").select("email").eq("email", user_data.email).execute()
         if existing_user.data:
-            await log_security_event(
-                supabase_client=supabase_client,
-                event="registration_attempt_existing_email",
-                client_ip=api_logger._get_client_ip(request),
-                details=f"Email: {user_data.email}"
-            )
+            try:
+                await log_security_event(
+                    supabase_client=supabase_client,
+                    event="reg_exist",  # Accorciato per evitare limite caratteri
+                    client_ip=api_logger._get_client_ip(request),
+                    details=f"Email: {user_data.email}"
+                )
+            except Exception as log_error:
+                print(f"WARNING: Failed to log security event: {str(log_error)}")
+            
             raise HTTPException(status_code=400, detail="Utente già esistente")
 
+        print(f"DEBUG: Hashing password for {user_data.email}")
         hashed_password = hash_password(user_data.password)
         user_id = str(uuid.uuid4())
         current_time = get_utc_now()
         
+        print(f"DEBUG: Creating user record for {user_data.email}")
         new_user = {
             "id": user_id,
             "email": user_data.email,
@@ -526,49 +574,75 @@ async def register_user(user_data: UserRegisterRequest, request: Request):
             "google_id": None
         }
         
+        print(f"DEBUG: Inserting user into database")
         result = supabase_client.table("users").insert(new_user).execute()
         if not result.data:
             raise HTTPException(status_code=500, detail="Errore creando utente")
         
         user_record = result.data[0]
-        user_record.pop("password_hash", None)
+        print(f"DEBUG: User created successfully: {user_record['id']}")
         
-        # Crea i token
+        # Rimuovi password hash e serializza datetime
+        user_record_clean = user_record.copy()
+        user_record_clean.pop("password_hash", None)
+        user_record_serialized = serialize_datetime_fields(user_record_clean)
+        
+        print(f"DEBUG: Creating JWT tokens")
         access_token = create_access_token({"sub": user_record["email"], "user_id": user_record["id"]})
         refresh_token = create_refresh_token({"sub": user_record["email"], "user_id": user_record["id"]})
         
-        # Crea risposta
+        print(f"DEBUG: Preparing JSON response")
         response_data = {
-            "user": UserResponse(**user_record).dict(),
+            "user": user_record_serialized,  # Usa dati serializzati invece di UserResponse
             "message": "Registrazione completata con successo"
         }
         
+        print(f"DEBUG: Creating JSONResponse")
         response = JSONResponse(content=response_data)
+        
+        print(f"DEBUG: Setting auth cookies")
         set_auth_cookies(response, access_token, refresh_token)
         
-        process_time = (time.time() - start_time) * 1000
-        await api_logger.log_api_call(
-            request=request,
-            response_time=process_time,
-            user_id=user_id,
-            additional_data={"action": "user_registration", "email": user_data.email}
-        )
+        # Log API call con gestione errori migliorata
+        try:
+            print(f"DEBUG: Logging API call")
+            process_time = (time.time() - start_time) * 1000
+            await api_logger.log_api_call(
+                request=request,
+                response_time=process_time,
+                user_id=user_id,
+                additional_data={
+                    "action": "register",  # Accorciato per evitare limite
+                    "email": user_data.email[:50]  # Limita lunghezza email
+                }
+            )
+            print(f"DEBUG: API call logged successfully")
+        except Exception as log_error:
+            print(f"WARNING: Failed to log API call: {str(log_error)}")
+            # Non far fallire la registrazione per un errore di logging
         
-        if os.getenv("DEBUG", "false").lower() == "true":
-            print(f"✅ Registration successful for {user_data.email}")
-        
+        print(f"DEBUG: Registration completed successfully for {user_data.email}")
         return response
         
     except HTTPException:
+        # Re-raise HTTPException senza modifiche
         raise
     except Exception as e:
-        process_time = (time.time() - start_time) * 1000
-        await api_logger.log_api_call(
-            request=request,
-            response_time=process_time,
-            user_id=user_id,
-            error=str(e)
-        )
+        print(f"ERROR: Registration failed for {user_data.email}: {str(e)}")
+        print(f"ERROR: Exception type: {type(e).__name__}")
+        
+        # Log errore con gestione sicura
+        try:
+            process_time = (time.time() - start_time) * 1000
+            await api_logger.log_api_call(
+                request=request,
+                response_time=process_time,
+                user_id=user_id,
+                error=str(e)[:200]  # Tronca errore lungo
+            )
+        except Exception as log_error:
+            print(f"WARNING: Failed to log error: {str(log_error)}")
+            
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
 @router.post("/refresh")

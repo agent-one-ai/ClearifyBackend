@@ -365,11 +365,11 @@ def send_confirmation_email_task(self, email_data: Dict):
             'payment_intent_id': email_data.get('payment_intent_id', 'N/A'),
         }
         
-        html_body, text_body = email_service.render_template("payment_confirmation", context)
+        subject, html_body, text_body = email_service.render_template_and_subject("payment_confirmation", context)
         
         email_success = email_service.send_email_sync(
             to_email=customer_email,
-            subject=f"Conferma pagamento - Abbonamento {email_data['plan_type'].title()}",
+            subject=subject,
             html_body=html_body,
             text_body=text_body,
             email_type="payment_confirmation",
