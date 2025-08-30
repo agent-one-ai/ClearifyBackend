@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
 import os
 import logging
@@ -100,6 +101,36 @@ app = FastAPI(
 
 # Registra il rate limiter nell'app
 app.state.limiter = limiter
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/debug-static-files")
+async def debug_static_files():
+    import os
+    from pathlib import Path
+    
+    # Controlla la directory corrente
+    current_dir = os.getcwd()
+    static_dir = os.path.join(current_dir, "static")
+    emails_dir = os.path.join(static_dir, "images", "emails")
+    
+    debug_info = {
+        "current_directory": current_dir,
+        "static_directory": static_dir,
+        "static_exists": os.path.exists(static_dir),
+        "emails_directory": emails_dir,
+        "emails_exists": os.path.exists(emails_dir),
+        "files_in_static": [],
+        "files_in_emails": []
+    }
+    
+    if os.path.exists(static_dir):
+        debug_info["files_in_static"] = os.listdir(static_dir)
+    
+    if os.path.exists(emails_dir):
+        debug_info["files_in_emails"] = os.listdir(emails_dir)
+    
+    return debug_info
 
 # Custom rate limit exception handler
 @app.exception_handler(RateLimitExceeded)

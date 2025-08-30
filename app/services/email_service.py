@@ -106,7 +106,7 @@ class EmailService:
             except Exception as db_error:
                 logger.warning(f"Failed to save email to database: {str(db_error)}")
 
-            # 🔥 PREPARA E INVIA EMAIL
+            # PREPARA E INVIA EMAIL
             message = MIMEMultipart("alternative")
             message["Subject"] = subject
             message["From"] = self.sender_email
@@ -177,8 +177,6 @@ class EmailService:
                     logger.warning(f"Failed to update error status: {str(db_error)}")
             
             return False
-
-    # ... altri metodi esistenti rimangono uguali ...
     
     async def send_email_async(
         self,
@@ -252,26 +250,26 @@ class EmailService:
                 return self._render_database_template(db_template, context)
             
             # 2️⃣ PROVA DA FILE JINJA2
-            if JINJA_AVAILABLE and self.jinja_env:
-                try:
-                    html_template = self.jinja_env.get_template(f"{template_name}.html")
-                    html_content = html_template.render(**context)
+            # if JINJA_AVAILABLE and self.jinja_env:
+            #     try:
+            #         html_template = self.jinja_env.get_template(f"{template_name}.html")
+            #         html_content = html_template.render(**context)
                     
-                    try:
-                        text_template = self.jinja_env.get_template(f"{template_name}.txt")
-                        text_content = text_template.render(**context)
-                    except Exception:
-                        text_content = None
+            #         try:
+            #             text_template = self.jinja_env.get_template(f"{template_name}.txt")
+            #             text_content = text_template.render(**context)
+            #         except Exception:
+            #             text_content = None
                     
-                    logger.info(f"📁 Using file template: {template_name}")
-                    return html_content, text_content
+            #         logger.info(f"📁 Using file template: {template_name}")
+            #         return html_content, text_content
                     
-                except Exception as template_error:
-                    logger.warning(f"File template failed: {template_error}")
+            #     except Exception as template_error:
+            #         logger.warning(f"File template failed: {template_error}")
             
             # 3️⃣ FALLBACK: TEMPLATE HARDCODED
-            logger.info(f"🔧 Using hardcoded template: {template_name}")
-            return self._get_default_template(template_name, context)
+            # logger.info(f"🔧 Using hardcoded template: {template_name}")
+            # return self._get_default_template(template_name, context)
                 
         except Exception as e:
             logger.warning(f"Template system error: {str(e)}")
