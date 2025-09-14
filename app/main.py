@@ -16,6 +16,7 @@ from app.api.v1.endpoints import text_processing
 from app.api.v1.endpoints import auth
 from app.api.v1.endpoints import frontend
 from app.api.v1.endpoints import payments
+from app.api.v1.endpoints import support
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -325,6 +326,12 @@ app.include_router(
     frontend.router,
     prefix="/api/v1/frontend",
     tags=["Frontend"]
+)
+
+app.include_router(
+    support.router,
+    prefix="/api/v1/support",
+    tags=["Support"]
 )
 
 app.include_router(auth.router, prefix="/api/v1")

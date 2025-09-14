@@ -67,24 +67,27 @@ ST=${STATE}
 L=${CITY}
 O=${ORG}
 OU=${ORG_UNIT}
-CN=${COMMON_NAME}
+CN=localhost
 emailAddress=${EMAIL}
 
 [v3_req]
-keyUsage = keyEncipherment, dataEncipherment
+basicConstraints = CA:FALSE
+keyUsage = nonRepudiation, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
 
 [alt_names]
-DNS.1 = ${COMMON_NAME}
-DNS.2 = localhost
-DNS.3 = clearify-backend
-DNS.4 = clearify-redis
-DNS.5 = redis
-DNS.6 = nginx
+DNS.1 = localhost
+DNS.2 = *.localhost
+DNS.3 = clearify.local
+DNS.4 = *.clearify.local
+DNS.5 = clearify-backend
+DNS.6 = clearify-redis
+DNS.7 = redis
+DNS.8 = nginx
 IP.1 = 127.0.0.1
 IP.2 = ::1
-IP.3 = 192.168.1.109
+IP.3 = 192.168.1.108
 EOF
 
 # Firma il certificato server con la CA
