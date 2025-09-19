@@ -1,1 +1,0 @@
-# TODO: Insert here some function or methods that can be used in the entire project

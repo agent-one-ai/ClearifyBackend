@@ -213,8 +213,8 @@ async def process_text(
             raise HTTPException(
                 status_code=429,
                 detail={
-                    "error": "OpenAI rate limit",
-                    "message": "OpenAI API quota temporarily exceeded. Please try again in a moment.",
+                    "error": "Rate limit",
+                    "message": "API quota temporarily exceeded. Please try again in a moment.",
                     "retry_after": 60,
                     "quota_info": quota_info,
                     "type": "openai_quota_exceeded"

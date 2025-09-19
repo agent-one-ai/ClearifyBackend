@@ -199,21 +199,6 @@ async def create_support_ticket(
             logger.error(f"Error sending internal notification: {str(internal_email_error)}")
             # Non far fallire il ticket per errore email interna
         
-        # Log dell'operazione
-        process_time = (time.time() - start_time) * 1000
-        await api_logger.log_api_call(
-            request=request,
-            response_time=process_time,
-            user_id=ticket_request.userId,
-            additional_data={
-                "action": "create_support_ticket",
-                "ticket_id": ticket_id,
-                "category": ticket_request.category,
-                "priority": ticket_request.priority,
-                "email": ticket_request.email
-            }
-        )
-        
         logger.info(f"Support ticket {ticket_id} created successfully")
         
         return SupportTicketResponse(

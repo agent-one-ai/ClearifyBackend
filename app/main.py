@@ -25,6 +25,7 @@ logging.basicConfig(level=logging.INFO)
 # UTILITY FUNCTIONS PER PROXY (DEFINITE PRIMA)
 # ================================
 
+#Funzione per rilevare se la richiesta arriva da nginx proxy, per controllare se la richiesta è sicura
 def is_behind_proxy(request: Request) -> bool:
     """Rileva se la richiesta arriva da nginx proxy"""
     return (
@@ -33,14 +34,16 @@ def is_behind_proxy(request: Request) -> bool:
         request.headers.get("x-real-ip") is not None
     )
 
-def get_client_ip(request: Request) -> str:
+#Funzione per ottenere l'IP reale del client considerando proxy headers
+def get_client_ip(request):
     """Ottieni l'IP reale del client considerando proxy headers"""
     try:
-        # Priorità: X-Real-IP (nginx) > X-Forwarded-For > remote address
+        # Ottengo l'IP reale del client
         real_ip = request.headers.get("x-real-ip")
         if real_ip:
             return real_ip
         
+        #Ottengo a chi sta facendo la richiesta
         forwarded_for = request.headers.get("x-forwarded-for")
         if forwarded_for:
             return forwarded_for.split(",")[0].strip()
@@ -53,25 +56,7 @@ def get_client_ip(request: Request) -> str:
         logger.warning(f"Error getting client IP: {e}")
         return "unknown"
 
-# Rate Limiter Setup - AGGIORNATO
-def get_user_id_or_ip(request):
-    """Funzione per identificare l'utente (IP se non autenticato) - SAFE VERSION"""
-    try:
-        # TODO: Aggiorna quando implementi l'autenticazione completa
-        # if hasattr(request.state, 'user') and request.state.user:
-        #     return f"user_{request.state.user.id}"
-        
-        # Usa la funzione sicura get_client_ip
-        return get_client_ip(request)
-    except Exception as e:
-        logger.warning(f"Error in get_user_id_or_ip: {e}")
-        try:
-            # Fallback a get_remote_address se disponibile
-            return get_remote_address(request)
-        except Exception:
-            return "unknown"
-
-# Setup Redis per rate limiting
+# Controllo se Redis è disponibile
 try:
     redis_client = redis.Redis.from_url(settings.redis_url, db=1, decode_responses=True)
     redis_client.ping()
@@ -81,57 +66,29 @@ except Exception as e:
     redis_available = False
     logger.warning(f"⚠️  Redis not available for rate limiting: {e}")
 
-# Crea limiter
+# Se Redis è disponibile, creo il limiter
+# Il limiter viene usato per limitare il numero di richieste per IP
 if redis_available:
     limiter = Limiter(
-        key_func=get_user_id_or_ip,
-        storage_uri=f"{settings.redis_url}/1"  # Database 1 per rate limiting
+        key_func=get_client_ip,
+        storage_uri=f"{settings.redis_url}/1"
     )
 else:
-    # Fallback a memory storage se Redis non è disponibile
-    limiter = Limiter(key_func=get_user_id_or_ip)
+    # Se Redis non è disponibile, uso in-memory rate limiting (non è raccomandato per la produzione)
+    limiter = Limiter(key_func=get_client_ip())
     logger.warning("⚠️  Using in-memory rate limiting (not recommended for production)")
 
-# Create FastAPI app
+# Instanzio l'app FastAPI e configuro le sue proprietà
 app = FastAPI(
     title=settings.app_name,
-    description="Text humanization and improvement service with nginx proxy",
-    version="1.0.0",
-    docs_url="/docs" if os.getenv("ENVIRONMENT") == "development" else None
+    description="Clearify Backend",
+    version="1.0.0"
 )
 
 # Registra il rate limiter nell'app
 app.state.limiter = limiter
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
-
-@app.get("/debug-static-files")
-async def debug_static_files():
-    import os
-    from pathlib import Path
-    
-    # Controlla la directory corrente
-    current_dir = os.getcwd()
-    static_dir = os.path.join(current_dir, "static")
-    emails_dir = os.path.join(static_dir, "images", "emails")
-    
-    debug_info = {
-        "current_directory": current_dir,
-        "static_directory": static_dir,
-        "static_exists": os.path.exists(static_dir),
-        "emails_directory": emails_dir,
-        "emails_exists": os.path.exists(emails_dir),
-        "files_in_static": [],
-        "files_in_emails": []
-    }
-    
-    if os.path.exists(static_dir):
-        debug_info["files_in_static"] = os.listdir(static_dir)
-    
-    if os.path.exists(emails_dir):
-        debug_info["files_in_emails"] = os.listdir(emails_dir)
-    
-    return debug_info
 
 # Custom rate limit exception handler
 @app.exception_handler(RateLimitExceeded)
@@ -162,10 +119,6 @@ async def rate_limit_handler(request, exc: RateLimitExceeded):
 frontend_url = os.getenv("FRONTEND_URL", "https://localhost:3000")
 is_development = os.getenv("ENVIRONMENT", "development") == "development"
 
-print(f"🌐 Frontend URL: {frontend_url}")
-print(f"🔧 Environment: {os.getenv('ENVIRONMENT', 'development')}")
-print(f"🔗 Behind nginx proxy: Expected")
-
 if is_development:
     # In sviluppo, includi sia nginx proxy che accesso diretto
     allowed_origins = [
@@ -176,7 +129,6 @@ if is_development:
         "https://clearify.local",      # Custom domain
         frontend_url                   # Da environment
     ]
-    print(f"🔧 Dev mode - FastAPI CORS origins: {allowed_origins}")
 else:
     # In produzione, usa configurazione da settings
     cors_origins = os.getenv("CORS_ORIGINS", frontend_url)
@@ -184,13 +136,10 @@ else:
         allowed_origins = [origin.strip() for origin in cors_origins.split(',')]
     else:
         allowed_origins = [frontend_url]
-    print(f"🔧 Prod mode - FastAPI CORS origins: {allowed_origins}")
 
-# CORS middleware DISABILITATO - nginx gestisce tutto
-print("🔗 CORS managed by nginx proxy - FastAPI CORS disabled")
 
 # ================================
-# MIDDLEWARE PER NGINX PROXY - AGGIORNATO E SICURO
+# MIDDLEWARE PER NGINX PROXY
 # ================================
 
 @app.middleware("http")
@@ -198,63 +147,7 @@ async def proxy_headers_middleware(request: Request, call_next):
     """Middleware per gestire headers da nginx proxy"""
     
     try:
-        # Debug headers da proxy
-        if os.getenv("DEBUG", "false").lower() == "true":
-            forwarded_proto = request.headers.get("x-forwarded-proto")
-            forwarded_host = request.headers.get("x-forwarded-host")
-            real_ip = request.headers.get("x-real-ip")
-            behind_proxy = is_behind_proxy(request)
-            
-            print(f"\n🌐 === PROXY REQUEST DEBUG ===")
-            print(f"🌐 {request.method} {request.url}")
-            print(f"🔗 Origin: {request.headers.get('origin', 'None')}")
-            print(f"🔗 Referer: {request.headers.get('referer', 'None')}")
-            print(f"🍪 Request cookies: {dict(request.cookies)}")
-            print(f"🍪 Cookie header: {request.headers.get('cookie', 'No cookie header')}")
-            
-            # Proxy headers
-            print(f"🔗 X-Forwarded-Proto: {forwarded_proto}")
-            print(f"🔗 X-Forwarded-Host: {forwarded_host}")
-            print(f"🔗 X-Real-IP: {real_ip}")
-            print(f"🔗 Behind nginx proxy: {behind_proxy}")
-            print(f"🔗 Client IP: {get_client_ip(request)}")
-            
-            print(f"🔐 User-Agent: {request.headers.get('user-agent', 'Unknown')[:50]}...")
-            print(f"⚙️ Frontend URL: {os.getenv('FRONTEND_URL')}")
-            print(f"🔒 Request scheme: {request.url.scheme}")
-            print(f"🏠 Request host: {request.headers.get('host', 'Unknown')}")
-            
-            if behind_proxy:
-                print(f"✅ GOOD: Request via HTTPS nginx proxy")
-            else:
-                print(f"⚠️  Direct request (bypassing nginx proxy)")
-            
-            if not request.cookies:
-                print(f"⚠️  WARNING: No cookies received")
-            
-            print(f"🌐 ===============================\n")
-        
-        # Log richieste OPTIONS (preflight)
-        if request.method == "OPTIONS" and os.getenv("DEBUG", "false").lower() == "true":
-            print(f"🔍 CORS Preflight - Origin: {request.headers.get('origin')}")
-            print(f"🔍 CORS Preflight - Method: {request.headers.get('access-control-request-method')}")
-            print(f"🔍 CORS Preflight - Headers: {request.headers.get('access-control-request-headers')}")
-        
         response = await call_next(request)
-        
-        # Aggiungi headers di debug per proxy
-        if os.getenv("DEBUG", "false").lower() == "true":
-            response.headers["X-Proxy-Debug"] = "nginx-proxy"
-            response.headers["X-Backend-Scheme"] = request.url.scheme
-            response.headers["X-Behind-Proxy"] = str(is_behind_proxy(request))
-            response.headers["X-Client-IP"] = get_client_ip(request)
-            
-            # Log response headers per debug
-            if request.method == "OPTIONS":
-                print(f"🔍 CORS Response Headers:")
-                for key, value in response.headers.items():
-                    if key.lower().startswith('access-control'):
-                        print(f"   {key}: {value}")
         
         return response
         
@@ -263,12 +156,13 @@ async def proxy_headers_middleware(request: Request, call_next):
         # In caso di errore, continua comunque
         return await call_next(request)
 
-# Global rate limiting per tutti gli endpoint - AGGIORNATO E SICURO
+# Global rate limiting per tutti gli endpoint
 @app.middleware("http") 
 async def rate_limit_middleware(request, call_next):
-    """Middleware globale per rate limiting base - SAFE VERSION"""
+    """Middleware globale per rate limiting base"""
     try:
         # Rate limiting globale molto permissivo per endpoint non critici
+        # Se la chiamata non è a uno dei seguenti endpoint, applica il rate limiting
         if not any(path in str(request.url) for path in ["/health", "/docs", "/openapi.json", "/"]):
             try:
                 current_minute = datetime.utcnow().strftime("%Y%m%d%H%M")
@@ -309,7 +203,7 @@ async def rate_limit_middleware(request, call_next):
                 content={"error": "Internal server error", "detail": "Middleware error"}
             )
 
-# Include routers con rate limiting
+# Vado a includere i routers che ho creato
 app.include_router(
     text_processing.router,
     prefix="/api/v1/text",
@@ -334,7 +228,11 @@ app.include_router(
     tags=["Support"]
 )
 
-app.include_router(auth.router, prefix="/api/v1")
+app.include_router(
+    support.router,
+    prefix="/api/v1",
+    tags=["Support"]
+)
 
 @app.get("/")
 async def root():
@@ -359,8 +257,9 @@ async def health_check():
         
         if redis_available:
             try:
+                # Testo la connessione a Redis e controllo se è disponibile
                 redis_client.ping()
-                
+
                 # Check current OpenAI usage
                 current_minute = datetime.utcnow().strftime("%Y%m%d%H%M")
                 current_rpm = int(redis_client.get(f"openai:rpm:{current_minute}") or 0)
@@ -583,12 +482,3 @@ async def shutdown_event():
             logger.info("✅ Redis connection closed")
         except Exception as e:
             logger.error(f"Error closing Redis connection: {e}")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=settings.PORT,
-        reload=settings.debug
-    )
