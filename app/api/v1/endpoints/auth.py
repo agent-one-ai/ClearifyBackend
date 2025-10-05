@@ -24,6 +24,8 @@ from app.schemas.auth import (
 from app.core.logging import SupabaseAPILogger, log_request, log_security_event
 import time
 
+from app.services import email_service
+
 router = APIRouter(prefix="/auth", tags=["authentication"])
 security = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -302,7 +304,12 @@ async def google_callback(request: Request):
         if not id_token_jwt:
             raise HTTPException(status_code=400, detail="ID token mancante")
 
-        idinfo = id_token.verify_oauth2_token(id_token_jwt, google_requests.Request(), settings.GOOGLE_CLIENT_ID)
+        idinfo = id_token.verify_oauth2_token(
+                    id_token_jwt, 
+                    google_requests.Request(), 
+                    settings.GOOGLE_CLIENT_ID,
+                    clock_skew_in_seconds=10
+                )
         email = idinfo.get("email")
         google_id = idinfo.get("sub")
         name = idinfo.get("name", "")
@@ -345,6 +352,13 @@ async def google_callback(request: Request):
             result = supabase_client.table("users").insert(new_user).execute()
             if not result.data:
                 raise HTTPException(status_code=500, detail="Errore creando nuovo utente")
+            
+            #Vado a mandare direttamente l'email di benvenuto, senza creare un task
+            email_service.send_registration_confirmation_email(
+                to_email=email,
+                customer_name=name
+            )
+
             user_data = result.data[0]
             action = "google_signup_new_user"
 

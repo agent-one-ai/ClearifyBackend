@@ -47,7 +47,6 @@ class EmailService:
         html_body: str,
         text_body: Optional[str] = None,
         attachments: Optional[List[Dict]] = None,
-        # 🔥 NUOVO: parametri per logging in database
         email_type: str = "system_notification",
         payment_intent_id: str = None,
         subscription_id: str = None,
@@ -148,7 +147,6 @@ class EmailService:
         except Exception as e:
             logger.error(f"❌ Failed to send email to {to_email}: {str(e)}")
             
-            # 🔥 AGGIORNA STATUS COME FALLITA
             if email_queue_id:
                 try:
                     supabase_client.table('email_queue').update({
@@ -224,7 +222,6 @@ class EmailService:
         except Exception as e:
             logger.warning(f"⚠️ Failed to add attachment {attachment['filename']}: {str(e)}")
 
-    # 🔥 NUOVO METODO: Renderizza template e soggetto da database
     def render_template_and_subject(self, template_name: str, context: Dict) -> tuple[str, str, str]:
         """
         Renderizza template HTML, testo e soggetto dal database
@@ -413,7 +410,6 @@ Rinnova su: https://clearify.com/checkout
         
         return subject, html_body, text_body
 
-    # 🔥 METODI AGGIORNATI CON NUOVO SISTEMA
     def send_subscription_expiring_email(
         self,
         to_email: str,
@@ -436,7 +432,7 @@ Rinnova su: https://clearify.com/checkout
             
             return self.send_email_sync(
                 to_email=to_email,
-                subject=subject,  # 🔥 SOGGETTO DAL DATABASE
+                subject=subject,
                 html_body=html_body,
                 text_body=text_body,
                 email_type="subscription_expiring",
@@ -488,7 +484,6 @@ Rinnova su: https://clearify.com/checkout
             logger.error(f"Error in send_payment_failed_email_service: {str(e)}")
             return False
 
-# 🔥 FUNZIONI UTILITY AGGIORNATE con template da database
 def send_payment_confirmation_email(
     to_email: str,
     plan_type: str,
@@ -511,13 +506,11 @@ def send_payment_confirmation_email(
             'payment_intent_id': payment_intent_id,
         }
         
-        # 🔥 RENDERIZZA TEMPLATE E SOGGETTO DAL DATABASE
         subject, html_body, text_body = email_service.render_template_and_subject("payment_confirmation", context)
         
-        # 🔥 INVIA EMAIL con tracking completo
         success = email_service.send_email_sync(
             to_email=to_email,
-            subject=subject,  # 🔥 SOGGETTO DAL DATABASE
+            subject=subject,
             html_body=html_body,
             text_body=text_body,
             email_type="payment_confirmation",
@@ -535,7 +528,44 @@ def send_payment_confirmation_email(
         logger.error(f"❌ Error in send_payment_confirmation_email: {str(e)}")
         return False
 
-# 🔥 NUOVA FUNZIONE: Gestione template database
+def send_registration_confirmation_email(
+    to_email: str,
+    customer_name: str
+) -> bool:
+    """
+    Funzione di utilità per inviare email di conferma pagamento con template da database
+    """
+    try:
+        email_service = EmailService()
+        
+        # Il context, passando le variabili necessarie al template
+        context = {
+            'customer_name': customer_name or to_email.split('@')[0].title(),
+            'user_email': to_email
+        }
+        
+        #Prendo il template dal database
+        subject, html_body, text_body = email_service.render_template_and_subject("registration_confirmation", context)
+        
+        #Invio l'email
+        success = email_service.send_email_sync(
+            to_email=to_email,
+            subject=subject,
+            html_body=html_body,
+            text_body=text_body,
+            email_type="registration_confirmation",
+            metadata={
+                'customer_name': customer_name,
+                'user_email': to_email
+            }
+        )
+        
+        return success
+        
+    except Exception as e:
+        logger.error(f"❌ Error in send_payment_confirmation_email: {str(e)}")
+        return False
+
 def create_or_update_email_template(
     name: str,
     subject_template: str,

@@ -234,6 +234,12 @@ app.include_router(
     tags=["Support"]
 )
 
+app.include_router(
+    auth.router,
+    prefix="/api/v1",
+    tags=["Auth"]
+)
+
 @app.get("/")
 async def root():
     return {
