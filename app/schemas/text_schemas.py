@@ -18,6 +18,7 @@ class TextProcessingType(str, Enum):
 class TextProcessingRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=10000, description="Text to process")
     processing_type: TextProcessingType = Field(default=TextProcessingType.HUMANIZER)
+    user_id: str = Field(default='anonymous', description="User Id")
     options: Optional[Dict[str, Any]] = Field(default={}, description="Additional processing options")
     
     @validator('text')

@@ -1,9 +1,8 @@
 from celery import current_task
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Dict, Any
-
 from app.core.celery_app import celery_app
 from app.services.openai_service import openai_service
 from app.schemas.text_schemas import TextProcessingType
@@ -13,11 +12,45 @@ from app.core.config import Settings
 from app.core.stripe_config import StripeConfig
 from app.services.supabase_payment_service import payment_service
 from app.core.supabase_client import supabase_client
-
+from app.core.report_generator import ReportGenerator
+import asyncio
 # Import EmailService class invece delle funzioni
 from app.services.email_service import EmailService
+import logging
+import os
 
+# Setup logger per il sistema analytics
+def setup_analytics_logger():
+    logger = logging.getLogger('clearify_analytics')
+    
+    if logger.handlers:  # Evita duplicazione handlers
+        return logger
+        
+    logger.setLevel(logging.INFO)
+    
+    # Formatter dettagliato
+    formatter = logging.Formatter(
+        '%(asctime)s | %(levelname)-8s | %(funcName)-20s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Console sempre attivo
+    console = logging.StreamHandler()
+    console.setFormatter(formatter)
+    logger.addHandler(console)
+    
+    # File solo se specificato
+    if Settings.LOG_TO_FILE.lower() == 'true': 
+        file_handler = logging.FileHandler('analytics.log')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    
+    return logger
+
+# Instanza il logger
+#logger = setup_analytics_logger()
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # Crea istanza globale del servizio email
 email_service = EmailService()
@@ -26,6 +59,20 @@ email_service = EmailService()
 def process_text_task(self, text: str, processing_type: str, user_id: str, options: dict = None):
     task_id = self.request.id
     try:
+        # Log the text analyst 
+        text_analyses_data = {
+            'user_id': user_id,
+            'session_id': task_id,
+            'text_content': text,
+            'text_length': len(str(text)),
+            'text_word_count': len(text.split()),
+            'status': 'processing',
+            'created_at': datetime.now().isoformat(),
+            'is_ai_generated': True,
+            'confidence_score': 100
+        }        
+        result = supabase_client.table('text_analyses').insert(text_analyses_data).execute()
+        
         logger.info(f"Starting text processing task {task_id} for user {user_id}")
 
         self.update_state(
@@ -55,6 +102,19 @@ def process_text_task(self, text: str, processing_type: str, user_id: str, optio
         original_word_count = len(text.split())
         processed_word_count = len(processed_text.split())
 
+        # Update the text analyst
+        processing_time_ms = ( datetime.utcnow() - datetime.fromisoformat(self.request.eta or datetime.utcnow().isoformat())
+                            ) if self.request.eta else 0
+        update_data_text_analyses = {
+            'processed_text_word_count': processed_word_count,
+            'processed_text': processed_text,
+            'processed_text_lenght': len(str(processed_text)),
+            'status': 'completed',
+            'processing_time_ms': processing_time_ms,
+            'processing_type': processing_type
+        }
+        supabase_client.table("text_analyses").update(update_data_text_analyses).eq("session_id", task_id).execute()
+        
         result = {
             "status": "completed",
             "progress": 100,
@@ -64,9 +124,7 @@ def process_text_task(self, text: str, processing_type: str, user_id: str, optio
                 "processing_type": processing_type,
                 "word_count_original": original_word_count,
                 "word_count_processed": processed_word_count,
-                "processing_time": (
-                    datetime.utcnow() - datetime.fromisoformat(self.request.eta or datetime.utcnow().isoformat())
-                ).total_seconds() if self.request.eta else 0,
+                "processing_time": processing_time_ms,
             },
             "message": "Text processing completed successfully"
         }
@@ -75,6 +133,12 @@ def process_text_task(self, text: str, processing_type: str, user_id: str, optio
         return result
 
     except Exception as exc:
+        update_data_text_analyses = {
+            'status': 'failed',
+            'error_text': f"Error: {str(exc)}"
+        }
+        supabase_client.table("text_analyses").update(update_data_text_analyses).eq("session_id", task_id).execute()
+        
         logger.error(f"Task {task_id} failed: {str(exc)}")
         self.update_state(
             state="FAILURE",
@@ -708,6 +772,45 @@ def payment_health_check_task(self):
             'error': str(e),
             'timestamp': datetime.now().isoformat()
         }
+
+# Analicys section  
+@celery_app.task(bind=True, name="send_daily_report_task", acks_late=True)
+def send_daily_report_task(self):
+    """
+    Task DEDICATA per email report giornaliero usando EmailService direttamente
+    """
+    print("="*50)
+    print("TASK SEND_DAILY_REPORT_TASK CHIAMATO!")
+    print(f"Task ID: {self.request.id}")
+    print(f"Timestamp: {datetime.now()}")
+    print("="*50)
+    try:
+        logger.info(f"🚀 TASK STARTED!")
+        generator = ReportGenerator()
+
+        logger.info(f"Starting generation of the report")
+        yesterday = date.today() - timedelta(days=1)
+        result = asyncio.run(
+            generator.generate_daily_report(target_date=yesterday, send_email=True)
+        )
+
+        return {
+            'success': result,
+            'email_type': 'analytics',
+            'sent_at': datetime.now().isoformat(),
+        }
+        
+    except Exception as e:
+        print(f"🚀 TASK FAILED: {str(e)}!")
+        logger.error(f"Failed to send report email task:  {str(e)}")
+            
+        return {
+            'success': False,
+            'error': str(e),
+            'max_retries_reached': True,
+            'requires_manual_intervention': True
+        }
+
 
 # Utility functions
 def _validate_payment_data(data: Dict) -> bool:

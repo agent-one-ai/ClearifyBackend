@@ -26,7 +26,7 @@ import time
 
 from app.services import email_service
 
-router = APIRouter(prefix="/auth", tags=["authentication"])
+router = APIRouter()
 security = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 api_logger = SupabaseAPILogger(supabase_client)

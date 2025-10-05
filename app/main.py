@@ -17,6 +17,7 @@ from app.api.v1.endpoints import auth
 from app.api.v1.endpoints import frontend
 from app.api.v1.endpoints import payments
 from app.api.v1.endpoints import support
+from app.api.v1.endpoints import analytics
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -235,8 +236,14 @@ app.include_router(
 )
 
 app.include_router(
+    analytics.router,
+    prefix="/api/v1/analytics",
+    tags=["Analytics"]
+)
+
+app.include_router(
     auth.router,
-    prefix="/api/v1",
+    prefix="/api/v1/auth",
     tags=["Auth"]
 )
 

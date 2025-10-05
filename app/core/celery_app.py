@@ -2,6 +2,7 @@ import os
 import ssl
 from celery import Celery
 from app.core.config import settings
+from celery.schedules import crontab
 
 # Configurazione SSL per Redis
 def get_redis_ssl_config():
@@ -91,6 +92,7 @@ celery_app.conf.update(
         "app.workers.tasks.handle_webhook_event_task": {"queue": "webhooks"},
         "app.workers.tasks.send_email_task": {"queue": "emails"},
         "app.workers.tasks.process_payment_task": {"queue": "payments"},
+        "send_daily_report_task": {"queue": "reports"},
     },
     
     # Task execution
@@ -123,9 +125,17 @@ celery_app.conf.beat_schedule = {
     },
 }
 
+# Analytics 
+celery_app.conf.beat_schedule = {
+    "send-daily-report-task": {
+        "task": "send_daily_report_task",
+        "schedule": crontab(minute=0, hour=2) #crontab()
+    },
+}
+
 # Log della configurazione per debug
 import logging
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("clearify_analytics")
 
 logger.info(f"Celery broker URL: {broker_url}")
 logger.info(f"Celery result backend: {result_backend_url}")

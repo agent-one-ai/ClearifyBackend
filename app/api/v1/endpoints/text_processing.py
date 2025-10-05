@@ -58,8 +58,8 @@ def get_user_id_or_ip_safe(request: Request):
     """Funzione sicura per identificare l'utente"""
     try:
         # TODO: Aggiorna quando implementi l'autenticazione completa
-        # if hasattr(request.state, 'user') and request.state.user:
-        #     return f"user_{request.state.user.id}"
+        if hasattr(request.state, 'user') and request.state.user:
+             return f"user_{request.state.user.id}"
         
         return get_client_ip_safe(request)
     except Exception as e:
@@ -192,7 +192,7 @@ async def process_text(
     request: TextProcessingRequest,
     fastapi_request: Request,
     background_tasks: BackgroundTasks,
-    # current_user = Depends(get_current_user),  # Add auth later
+    #user_id = str #Depends(get_current_user),  # Add auth later
 ):
     """
     Start text processing task with OpenAI rate limiting
@@ -246,7 +246,7 @@ async def process_text(
             args=[
                 request.text,
                 request.processing_type.value,
-                "anonymous",  # Replace with current_user.id when auth is added
+                request.user_id, #"anonymous",  # Replace with current_user.id when auth is added
                 request.options
             ],
             task_id=task_id,
@@ -260,10 +260,10 @@ async def process_text(
         )
         
         # Log metrics per monitoring
-        user_id = get_user_id_or_ip_safe(fastapi_request)
+        #user_id = get_user_id_or_ip_safe(fastapi_request)
         logger.info(
             f"Text processing started - Task: {task_id}, "
-            f"User: {user_id}, Text length: {len(request.text)}, "
+            f"User: {request.user_id}, Text length: {len(request.text)}, "
             f"Est. tokens: {estimated_tokens}, "
             f"OpenAI usage: {quota_info.get('rpm_usage_percent', 0):.1f}% RPM"
         )

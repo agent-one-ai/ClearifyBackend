@@ -36,7 +36,8 @@ class Settings:
     API_KEY: str = os.getenv("API_KEY", "")
     JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "")
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "")
-
+    LOG_TO_FILE: str = os.getenv('LOG_TO_FILE', 'true')
+    
     # Stripe
     STRIPE_PUBLIC_KEY: str = os.getenv("STRIPE_PUBLIC_KEY", "")
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
@@ -81,7 +82,8 @@ class Settings:
     # Admin Email Settings
     ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", os.getenv("EMAIL_HOST_USER", "admin@clearify.com"))
     SUPPORT_EMAIL: str = os.getenv("SUPPORT_EMAIL", os.getenv("EMAIL_HOST_USER", "support@clearify.com"))
-
+    MAIN_MAIL = str = os.getenv("MAIN_MAIL", "agentonesrl@gmail.com")
+    
     cors_origins: str = f"http://localhost:3000,http://127.0.0.1:3000,{FRONTEND_URL}"
 
     @property

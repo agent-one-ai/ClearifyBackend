@@ -1,3 +1,4 @@
+from dataclasses import asdict
 import smtplib
 import ssl
 import email.mime.text
@@ -6,18 +7,22 @@ import email.mime.base
 import email.encoders
 from typing import Dict, Optional, List
 import logging
-from datetime import datetime
+from datetime import datetime, date
 import asyncio
 import aiosmtplib
 import os
 from pathlib import Path
 from app.core.supabase_client import supabase_client
+from app.core.analytics import AnalyticsDB
+from app.schemas.analytics import DailyMetrics
+from app.core.config import Settings
 
 # 🔥 FIX: Import specifici per evitare conflitti
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart  
 from email.mime.base import MIMEBase
 from email.encoders import encode_base64
+import re
 
 # Jinja2 import con error handling
 try:
@@ -97,7 +102,7 @@ class EmailService:
             message["From"] = self.sender_email
             message["To"] = to_email
             message["Date"] = email.utils.formatdate(localtime=True)
-
+            
             # Aggiungi corpo del messaggio
             if text_body:
                 text_part = MIMEText(text_body, "plain", "utf-8")
@@ -277,7 +282,7 @@ class EmailService:
             # 🔥 RENDERIZZA SOGGETTO (sempre obbligatorio)
             if not template_data.get('subject_template'):
                 raise ValueError(f"Missing subject_template for template: {template_data['name']}")
-                
+
             subject_template = Template(template_data['subject_template'])
             rendered_subject = subject_template.render(**context)
             
@@ -332,20 +337,20 @@ class EmailService:
             </html>
             """
             text_body = """
-Pagamento Confermato!
+            Pagamento Confermato!
 
-Ciao {{customer_name}},
+            Ciao {{customer_name}},
 
-Il tuo pagamento per l'abbonamento {{plan_type}} è stato elaborato con successo.
+            Il tuo pagamento per l'abbonamento {{plan_type}} è stato elaborato con successo.
 
-Dettagli:
-- Piano: {{plan_type}}
-- Importo: €{{amount}}
-- Data: {{payment_date}}
-- ID Transazione: {{payment_intent_id}}
+            Dettagli:
+            - Piano: {{plan_type}}
+            - Importo: €{{amount}}
+            - Data: {{payment_date}}
+            - ID Transazione: {{payment_intent_id}}
 
-Grazie per aver scelto Clearify!
-Supporto: support@clearify.com
+            Grazie per aver scelto Clearify!
+            Supporto: support@clearify.com
             """
             
         elif template_name == "subscription_expiring":
@@ -371,12 +376,12 @@ Supporto: support@clearify.com
             </html>
             """
             text_body = """
-Il tuo abbonamento sta scadendo
+            Il tuo abbonamento sta scadendo
 
-Il tuo abbonamento {{plan_type}} scadrà il {{end_date}}.
-Rinnova ora per continuare a usare tutte le funzionalità premium.
+            Il tuo abbonamento {{plan_type}} scadrà il {{end_date}}.
+            Rinnova ora per continuare a usare tutte le funzionalità premium.
 
-Rinnova su: https://clearify.com/checkout
+            Rinnova su: https://clearify.com/checkout
             """
         
         else:
@@ -483,7 +488,194 @@ Rinnova su: https://clearify.com/checkout
         except Exception as e:
             logger.error(f"Error in send_payment_failed_email_service: {str(e)}")
             return False
+    
+    # Analytics Section
+    async def send_daily_report(self, metrics: DailyMetrics, recipient_email: str) -> bool:
+        """Invia report giornaliero via email"""
+        
+        try:
+            email_service = EmailService() 
 
+            # Carica template HTML
+            html_template = self._get_template_from_database("analytics")
+            
+            # Sostituisce variabili nel template
+            html_content = self._replace_template_variables(html_template['html_template'], metrics)
+            
+            # Invia email            
+            success = email_service.send_email_sync(
+                to_email=recipient_email,
+                subject=f"{html_template['subject_template']} - {metrics.report_date}",
+                html_body=html_content,
+                email_type=f"{html_template['name']}"       
+            )
+                        
+            return success
+            
+        except Exception as e:
+            # Log errore
+            await self._log_email_sent(
+                report_date=datetime.strptime(metrics.report_date, "%B %d, %Y").date(),
+                recipient=recipient_email,
+                status="failed",
+                error_message=str(e),
+                report_data=asdict(metrics)
+            )
+            
+            print(f"Errore invio email: {e}")
+            return False
+
+    def _replace_template_variables(self, template: str, metrics: DailyMetrics) -> str:
+        """Sostituisce tutte le variabili {{}} nel template"""
+        
+        # Converti metriche in dizionario
+        data = asdict(metrics)
+        
+        # Aggiungi URL configurazione
+        data.update({
+            'dashboard_url': Settings.FRONTEND_URL,
+            'unsubscribe_url': Settings.FRONTEND_URL,
+            'base_url': Settings.FRONTEND_URL
+        })
+        
+        # Formattazione valori numerici con segni + per crescita positiva
+        data['daily_revenue'] = f"{data['daily_revenue']:.2f}"
+        data['analyses_growth'] = f"+{data['analyses_growth']}" if data['analyses_growth'] > 0 else str(data['analyses_growth'])
+        data['users_growth'] = f"+{data['users_growth']}" if data['users_growth'] > 0 else str(data['users_growth'])
+        data['signups_growth'] = f"+{data['signups_growth']}" if data['signups_growth'] > 0 else str(data['signups_growth'])
+        
+        # Formattazione numeri con separatori delle migliaia per leggibilità
+        data['total_analyses'] = f"{data['total_analyses']:,}".replace(',', '.')
+        data['active_users'] = f"{data['active_users']:,}".replace(',', '.')
+        data['new_signups'] = f"{data['new_signups']:,}".replace(',', '.')
+        data['ai_detected_count'] = f"{data['ai_detected_count']:,}".replace(',', '.')
+        data['human_detected_count'] = f"{data['human_detected_count']:,}".replace(',', '.')
+        data['premium_users_count'] = f"{data['premium_users_count']:,}".replace(',', '.')
+        data['peak_hour_analyses'] = f"{data['peak_hour_analyses']:,}".replace(',', '.')
+        data['low_hour_analyses'] = f"{data['low_hour_analyses']:,}".replace(',', '.')
+        data['avg_text_length'] = f"{data['avg_text_length']:,}".replace(',', '.')
+        
+        
+        # Formattazione percentuali con 1 decimale
+        data['ai_detected_percent'] = f"{data['ai_detected_percent']:.1f}"
+        data['human_detected_percent'] = f"{data['human_detected_percent']:.1f}"
+        data['avg_confidence'] = f"{data['avg_confidence']:.1f}"
+        data['success_rate'] = f"{data['success_rate']:.1f}"
+        data['system_uptime'] = f"{data['system_uptime']:.1f}"
+        
+        # Formattazione tempo di risposta
+        data['avg_response_time'] = f"{data['avg_response_time']:.2f}"
+        
+        # Formattazione orari (assicura formato 2 cifre)
+        data['peak_hour'] = f"{data['peak_hour']:02d}"
+        data['low_hour'] = f"{data['low_hour']:02d}"
+        
+        # Gestione valori zero per evitare display confusi
+        if data['premium_conversions'] == 0:
+            data['premium_conversions'] = "0"
+        
+        if float(data['daily_revenue']) == 0:
+            data['daily_revenue'] = "0.00"
+        
+        if data['api_errors'] == 0:
+            data['api_errors'] = "0"
+        
+        # Assicura che tutti i valori siano stringhe per sostituzione
+        for key in data:
+            if data[key] is None:
+                data[key] = "N/A"
+            else:
+                data[key] = str(data[key])
+        
+        # Lista completa di tutte le variabili presenti nel template HTML
+        template_variables = [
+            # Date e timestamp
+            'report_date',
+            'generation_time',
+            
+            # Core metrics
+            'total_analyses',
+            'analyses_growth',
+            'active_users', 
+            'users_growth',
+            'new_signups',
+            'signups_growth',
+            
+            # AI Detection stats
+            'ai_detected_percent',
+            'human_detected_percent', 
+            'ai_detected_count',
+            'human_detected_count',
+            'avg_confidence',
+            'avg_response_time',
+            'success_rate',
+            
+            # Business metrics
+            'premium_conversions',
+            'daily_revenue',
+            'premium_users_count',
+            
+            # Insights
+            'insight_1',
+            'insight_2', 
+            'insight_3',
+            
+            # Activity patterns
+            'peak_hour',
+            'peak_hour_analyses',
+            'low_hour',
+            'low_hour_analyses',
+            'avg_text_length',
+            
+            # System health
+            'system_uptime',
+            'api_errors',
+            
+            # URLs
+            'dashboard_url',
+            'unsubscribe_url',
+            'base_url'
+        ]
+        
+        # Sostituisce tutte le variabili nel template
+        for variable in template_variables:
+            if variable in data:
+                placeholder = f"{{{{{variable}}}}}"
+                template = template.replace(placeholder, data[variable])
+            else:
+                # Se una variabile non è presente, sostituisce con valore di default
+                placeholder = f"{{{{{variable}}}}}"
+                default_value = "N/A"
+                
+                # Valori di default specifici per alcune variabili
+                if variable in ['dashboard_url', 'unsubscribe_url', 'base_url']:
+                    default_value = Settings.FRONTEND_URL
+                elif variable.endswith('_growth'):
+                    default_value = "0"
+                elif variable.endswith('_percent') or variable.endswith('_rate'):
+                    default_value = "0.0"
+                elif variable in ['peak_hour', 'low_hour']:
+                    default_value = "12"
+                elif variable == 'generation_time':
+                    default_value = datetime.now().strftime("%H:%M CET")
+                elif variable == 'report_date':
+                    default_value = date.today().strftime("%B %d, %Y")
+                
+                template = template.replace(placeholder, default_value)
+        
+        # Verifica finale: cerca eventuali placeholder non sostituiti
+        remaining_placeholders = re.findall(r'\{\{([^}]+)\}\}', template)
+        
+        if remaining_placeholders:
+            print(f"⚠️  Placeholder non sostituiti trovati: {remaining_placeholders}")
+            
+            # Sostituisce placeholder rimanenti con "N/A"
+            for placeholder in remaining_placeholders:
+                template = template.replace(f"{{{{{placeholder}}}}}", "N/A")
+        
+        return template
+
+    # 🔥 FUNZIONI UTILITY AGGIORNATE con template da database
 def send_payment_confirmation_email(
     to_email: str,
     plan_type: str,
@@ -533,7 +725,7 @@ def send_registration_confirmation_email(
     customer_name: str
 ) -> bool:
     """
-    Funzione di utilità per inviare email di conferma pagamento con template da database
+    Funzione di utilità per inviare email di conferma registrazione con template da database
     """
     try:
         email_service = EmailService()
@@ -656,6 +848,7 @@ def get_email_statistics(days: int = 7) -> Dict:
     except Exception as e:
         logger.error(f"Error getting email statistics: {str(e)}")
         return {'total': 0, 'sent': 0, 'failed': 0, 'pending': 0, 'success_rate': 0}
+
 
 # Istanza globale del servizio
 email_service = EmailService()
