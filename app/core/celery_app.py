@@ -93,6 +93,8 @@ celery_app.conf.update(
         "app.workers.tasks.send_email_task": {"queue": "emails"},
         "app.workers.tasks.process_payment_task": {"queue": "payments"},
         "send_daily_report_task": {"queue": "reports"},
+        "process_expiring_subscriptions": {"queue": "subscriptions"},
+        #"process_expired_subscriptions": {"queue": "subscriptions"},
     },
     
     # Task execution
@@ -125,13 +127,28 @@ celery_app.conf.beat_schedule = {
     },
 }
 
-# Analytics 
+# Analytics Task
 celery_app.conf.beat_schedule = {
     "send-daily-report-task": {
         "task": "send_daily_report_task",
         "schedule": crontab(minute=0, hour=2) #crontab()
     },
 }
+
+# Payments Tasks
+celery_app.conf.beat_schedule = {
+    "process-expiring-subscriptions": {
+        "task": "process_expiring_subscriptions",
+        "schedule": crontab()
+    },
+}
+
+# celery_app.conf.beat_schedule = {
+#     "process-expired-subscriptions": {
+#         "task": "process_expired_subscriptions",
+#         "schedule": crontab()
+#     },
+# }
 
 # Log della configurazione per debug
 import logging

@@ -1,7 +1,7 @@
 from celery import current_task
 import asyncio
 import logging
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from typing import Dict, Any
 from app.core.celery_app import celery_app
 from app.services.openai_service import openai_service
@@ -810,6 +810,113 @@ def send_daily_report_task(self):
             'max_retries_reached': True,
             'requires_manual_intervention': True
         }
+
+# Payment section
+@celery_app.task(bind=True, name="process_expiring_subscriptions", acks_late=True)
+def process_expiring_subscriptions(self):
+    """
+    Task che informa l'utente che il proprio abbonamento è in scandenza
+    """
+    print("="*50)
+    print("TASK process_expiring_subscriptions CHIAMATO!")
+    print(f"Task ID: {self.request.id}")
+    print(f"Timestamp: {datetime.now()}")
+    print("="*50)
+    try:
+        logger.info(f"🚀 TASK STARTED!")
+
+        # Salvo le variabili
+        seven_days_from_now = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Cerco tutte le fatture che:
+        # - non sono scadute
+        # - non è stata ancora inviata la mail
+        # - mancano al massimo 7 giorni alla scadenza
+        result = supabase_client.table("payment_intents") \
+            .select("users(full_name), plan_type, completed_at, customer_email, id") \
+            .eq("status", "succeeded") \
+            .eq("expiring_mail_sent", False) \
+            .gte("completed_at", now) \
+            .lte("completed_at", seven_days_from_now) \
+            .order("completed_at", desc=True) \
+            .execute()
+
+        # Creo la lista degli abbonamenti in scadenza e una lista di oggetti
+        users_seen = set()
+        expiring_subscriptions = []
+
+        # Ciclo su tutti gli abbonamenti trovati
+        for record in result.data:
+            email = record['customer_email']
+            
+            # Salto se ho già elaborato questo utente
+            if email in users_seen:
+                continue
+            
+            # Aggiungo l'utente
+            users_seen.add(email)
+            
+            # Recupero tutte le variabili necessarie e le aggiungo alla lista
+            completed_date = datetime.fromisoformat(record['completed_at'].replace('Z', '+00:00'))
+            days_remaining = (completed_date - datetime.now(timezone.utc)).days
+            record['days_remaining'] = days_remaining
+            record['full_name'] = record['users']['full_name']
+            expiring_subscriptions.append(record)
+
+        # Ciclo su tutti gli abbonamenti in scadenza
+        for subscription in expiring_subscriptions:
+            context = {                
+                'user_name': subscription['full_name'],
+                'plan_type': subscription['plan_type'],
+                'expiration_date': datetime.fromisoformat(subscription['completed_at'].replace('Z', '+00:00')),
+                'days_remaining': record['days_remaining'],
+            }
+
+            # Recupero il template e invio la mail
+            subject, html_body, text_body = email_service.render_template_and_subject("subscription_expiring", context)
+            email_success = email_service.send_email_sync(
+                to_email=record['customer_email'],
+                subject=subject,
+                html_body=html_body,
+                text_body=text_body,
+                email_type="subscription_expiring",
+                metadata={
+                    'user_name': context['user_name'],
+                    'plan_type': context['plan_type'],
+                    'expiration_date': str(context['expiration_date']),
+                    'days_remaining': context['days_remaining']
+                }
+            )
+
+            # Se la mail è stata inviata con successo, aggiorno il campo per evitare di inviarla di nuovo nel prossimo ciclo
+            if email_success:
+                supabase_client.table("payment_intents") \
+                            .update({"expiring_mail_sent": True}) \
+                            .eq("id", subscription['id']) \
+                            .execute()
+
+        return {
+            'success': True,
+            'email_type': 'subscriptions',
+            'sent_at': datetime.now().isoformat(),
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to process expiring subscriptions task:  {str(e)}")
+            
+        return {
+            'success': False,
+            'error': str(e),
+            'max_retries_reached': True,
+            'requires_manual_intervention': True
+        }
+
+
+# Task to remove the premmium badge 
+    # Get all the user that have a exeipre account 
+    # And put the free badge on the table users
+    # Send the mail about theire exipre accounts 
 
 
 # Utility functions
