@@ -833,13 +833,14 @@ def process_expiring_subscriptions(self):
         # - non sono scadute
         # - non è stata ancora inviata la mail
         # - mancano al massimo 7 giorni alla scadenza
-        result = supabase_client.table("payment_intents") \
-            .select("users(full_name), plan_type, completed_at, customer_email, id") \
-            .eq("status", "succeeded") \
+        result = supabase_client.table("user_subscriptions") \
+            .select("users(full_name), plan_type, end_date, email, id") \
+            .eq("status", "active") \
             .eq("expiring_mail_sent", False) \
-            .gte("completed_at", now) \
-            .lte("completed_at", seven_days_from_now) \
-            .order("completed_at", desc=True) \
+            .gte("end_date", now) \
+            .lte("end_date", seven_days_from_now) \
+            .order("end_date", desc=True) \
+            .limit(100)\
             .execute()
 
         # Creo la lista degli abbonamenti in scadenza e una lista di oggetti
@@ -848,7 +849,7 @@ def process_expiring_subscriptions(self):
 
         # Ciclo su tutti gli abbonamenti trovati
         for record in result.data:
-            email = record['customer_email']
+            email = record['email']
             
             # Salto se ho già elaborato questo utente
             if email in users_seen:
@@ -858,7 +859,7 @@ def process_expiring_subscriptions(self):
             users_seen.add(email)
             
             # Recupero tutte le variabili necessarie e le aggiungo alla lista
-            completed_date = datetime.fromisoformat(record['completed_at'].replace('Z', '+00:00'))
+            completed_date = datetime.fromisoformat(record['end_date'].replace('Z', '+00:00'))
             days_remaining = (completed_date - datetime.now(timezone.utc)).days
             record['days_remaining'] = days_remaining
             record['full_name'] = record['users']['full_name']
@@ -869,14 +870,14 @@ def process_expiring_subscriptions(self):
             context = {                
                 'user_name': subscription['full_name'],
                 'plan_type': subscription['plan_type'],
-                'expiration_date': datetime.fromisoformat(subscription['completed_at'].replace('Z', '+00:00')),
+                'expiration_date': datetime.fromisoformat(subscription['end_date'].replace('Z', '+00:00')),
                 'days_remaining': record['days_remaining'],
             }
 
             # Recupero il template e invio la mail
             subject, html_body, text_body = email_service.render_template_and_subject("subscription_expiring", context)
             email_success = email_service.send_email_sync(
-                to_email=record['customer_email'],
+                to_email=record['email'],
                 subject=subject,
                 html_body=html_body,
                 text_body=text_body,
@@ -891,7 +892,7 @@ def process_expiring_subscriptions(self):
 
             # Se la mail è stata inviata con successo, aggiorno il campo per evitare di inviarla di nuovo nel prossimo ciclo
             if email_success:
-                supabase_client.table("payment_intents") \
+                supabase_client.table("user_subscriptions") \
                             .update({"expiring_mail_sent": True}) \
                             .eq("id", subscription['id']) \
                             .execute()
@@ -911,6 +912,44 @@ def process_expiring_subscriptions(self):
             'max_retries_reached': True,
             'requires_manual_intervention': True
         }
+    
+@celery_app.task(bind=True, name="process_expired_subscriptions", acks_late=True)
+def process_expired_subscriptions(self):
+    """
+    Task che informa l'utente che il proprio abbonamento è scaduto e aggiorna l'anagrafica
+    """
+    print("="*50)
+    print("TASK process_expired_subscriptions CHIAMATO!")
+    print(f"Task ID: {self.request.id}")
+    print(f"Timestamp: {datetime.now()}")
+    print("="*50)
+    try:
+        logger.info(f"🚀 TASK STARTED!")
+
+        # tables
+        #   user_subscriptions, users 
+        # Mi pesco l'ultimo abbonamento attivo del utente
+        # user_data = payment_service.get_user_subscription('email')
+
+        # # Se trovo un abbonamento attivo, lo disattivo 
+        # if user_data != None:
+        #     payment_service ._cancel_subscription(user_data['subscription_id'])
+
+        return {
+            'success': True,
+            'email_type': 'subscriptions',
+            'sent_at': datetime.now().isoformat(),
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to process expiring subscriptions task:  {str(e)}")
+            
+        return {
+            'success': False,
+            'error': str(e),
+            'max_retries_reached': True,
+            'requires_manual_intervention': True
+        }    
 
 
 # Task to remove the premmium badge 

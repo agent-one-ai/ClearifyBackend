@@ -95,6 +95,7 @@ celery_app.conf.update(
         "send_daily_report_task": {"queue": "reports"},
         "process_expiring_subscriptions": {"queue": "subscriptions"},
         #"process_expired_subscriptions": {"queue": "subscriptions"},
+        #"cleanup-old-payment-intents-task": {"queue": "cleanup"},
     },
     
     # Task execution
@@ -149,6 +150,16 @@ celery_app.conf.beat_schedule = {
 #         "schedule": crontab()
 #     },
 # }
+
+# Cleanup Task - TODO
+# celery_app.conf.beat_schedule = {
+#     "cleanup-old-payment-intents-task": {
+#         "task": "cleanup_old_payment_intents_task",
+#         "schedule": crontab()
+#     },
+# }
+
+
 
 # Log della configurazione per debug
 import logging
