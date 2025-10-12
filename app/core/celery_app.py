@@ -94,7 +94,7 @@ celery_app.conf.update(
         "app.workers.tasks.process_payment_task": {"queue": "payments"},
         "send_daily_report_task": {"queue": "reports"},
         "process_expiring_subscriptions": {"queue": "subscriptions"},
-        #"process_expired_subscriptions": {"queue": "subscriptions"},
+        "process_expired_subscriptions": {"queue": "subscriptions"},
         #"cleanup-old-payment-intents-task": {"queue": "cleanup"},
     },
     
@@ -120,46 +120,32 @@ celery_app.conf.update(
     task_send_sent_event=True,
 )
 
-# Optional: Configure Celery beat schedule (for periodic tasks)
+# Configure Celery beat schedule (for periodic tasks)
 celery_app.conf.beat_schedule = {
-    "cleanup-expired-tasks": {
-        "task": "app.workers.tasks.cleanup_expired_tasks",
-        "schedule": 3600.0,  # Every hour
-    },
-}
-
-# Analytics Task
-celery_app.conf.beat_schedule = {
+    # Cleanup Task  - TODO
+    # "cleanup-expired-tasks": {
+    #     "task": "app.workers.tasks.cleanup_expired_tasks",
+    #     "schedule": 3600.0,  # Every hour
+    # },
+    #"cleanup-old-payment-intents-task": {
+    #      "task": "cleanup_old_payment_intents_task",
+    #     "schedule": crontab()
+    # },
+    # Analytics Task
     "send-daily-report-task": {
         "task": "send_daily_report_task",
         "schedule": crontab(minute=0, hour=2) #crontab()
     },
-}
-
-# Payments Tasks
-celery_app.conf.beat_schedule = {
+    # Payments Tasks
     "process-expiring-subscriptions": {
         "task": "process_expiring_subscriptions",
         "schedule": crontab()
     },
+    "process-expired-subscriptions": {
+            "task": "process_expired_subscriptions",
+            "schedule": crontab(minute='*/2')
+    },
 }
-
-# celery_app.conf.beat_schedule = {
-#     "process-expired-subscriptions": {
-#         "task": "process_expired_subscriptions",
-#         "schedule": crontab()
-#     },
-# }
-
-# Cleanup Task - TODO
-# celery_app.conf.beat_schedule = {
-#     "cleanup-old-payment-intents-task": {
-#         "task": "cleanup_old_payment_intents_task",
-#         "schedule": crontab()
-#     },
-# }
-
-
 
 # Log della configurazione per debug
 import logging
