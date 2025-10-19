@@ -124,7 +124,6 @@ class SupabasePaymentService:
             existing_response = self.client.table("user_subscriptions")\
                 .select("*")\
                 .eq("email", email)\
-                .eq("status", "active")\
                 .execute()
             
             subscription_data = {
@@ -145,22 +144,25 @@ class SupabasePaymentService:
                 subscription_data["user_id"] = str(user_id)
             
             # Se esiste una subscription attiva
-            if existing_response.data:
+            if existing_response:
                 existing_sub = existing_response.data[0]
-                
+                logger.info(f"User Exists")
                 if existing_sub["plan_type"] != plan_type:
+                    logger.info(f"Insert new record")
                     # Upgrade/downgrade → cancella la vecchia e crea nuova
                     await self._cancel_subscription(existing_sub["id"])
                     response = self.client.table("user_subscriptions")\
                         .insert(subscription_data)\
                         .execute()
                 else:
+                    logger.info(f"Update")
                     # Aggiorna la subscription esistente
                     response = self.client.table("user_subscriptions")\
                         .update(subscription_data)\
                         .eq("id", existing_sub["id"])\
                         .execute()
             else:
+                logger.info(f"Inserisco il record perche non esiste")
                 # Nessuna subscription attiva → crea nuova
                 response = self.client.table("user_subscriptions")\
                     .insert(subscription_data)\
