@@ -1,349 +1,668 @@
 import random
 import re
-from collections import Counter
+from collections import Counter, deque
+from dataclasses import dataclass
+from typing import Dict, List, Tuple, Optional
+from abc import ABC, abstractmethod
+import math
 
-class Humanizer:
+@dataclass
+class TextAnalysis:
+    """Analisi completa dello stile del testo"""
+    formality_score: float
+    technical_score: float
+    avg_sentence_length: float
+    vocabulary_complexity: float
+    target_tone: str
+    paragraph_count: int
+    sentence_count: int
+    word_count: int
+    unique_word_ratio: float
+    is_already_human: bool
+    existing_colloquial_count: int
+
+@dataclass
+class ModificationConfig:
+    """Configurazione delle modifiche basata sul contesto"""
+    uncertainty_probability: float
+    colloquial_probability: float
+    sentence_variation: float
+    personal_touches: float
+    synonym_replacement: float
+    structure_modification: float
+    max_modifications_per_sentence: int
+
+class LanguageProcessor(ABC):
+    """Classe astratta per processori linguistici specifici"""
+    
+    @abstractmethod
+    def get_synonyms(self) -> Dict[str, List[str]]:
+        pass
+    
+    @abstractmethod
+    def get_phrase_patterns(self) -> Dict[str, List[str]]:
+        pass
+    
+    @abstractmethod
+    def get_uncertainty_markers(self) -> List[str]:
+        pass
+
+class EnglishProcessor(LanguageProcessor):
+    """Processore per lingua inglese - Ottimizzato per ZeroGPT"""
+    
+    def get_synonyms(self) -> Dict[str, List[str]]:
+        return {
+            # Sinonimi "imperfetti" ma umani
+            "analyze": ["examine", "look at", "study", "review"],
+            "demonstrate": ["show", "display", "reveal", "exhibit"],
+            "indicate": ["suggest", "show", "point to", "signal"],
+            "establish": ["set up", "create", "build", "form"],
+            "facilitate": ["simplify", "enable", "help", "support"],
+            "implement": ["apply", "use", "carry out", "deploy"],
+            "optimize": ["maximize", "improve", "enhance"],
+            "utilize": ["use", "employ", "apply"],
+            
+            # Aggettivi - versioni più umane
+            "comprehensive": ["rich", "extensive", "broad", "wide"],
+            "significant": ["important", "major", "actual", "real"],
+            "substantial": ["actual", "real", "considerable", "major"],
+            "efficient": ["effective", "productive", "smooth"],
+            "robust": ["strong", "solid", "powerful", "reliable"],
+            "innovative": ["creative", "new", "fresh", "original"],
+            "crucial": ["vital", "key", "essential", "important"],
+            "adequate": ["sufficient", "enough", "suitable"],
+            "numerous": ["various", "many", "multiple"],
+            
+            # Sostantivi - varianti più naturali
+            "methodology": ["method", "approach", "way"],
+            "framework": ["structure", "system", "model"],
+            "implementation": ["application", "use", "deployment"],
+            "utilization": ["use", "usage", "application"],
+            "paradigm": ["shift", "change", "model"],
+            "infrastructure": ["system", "structure", "framework"],
+            "datasets": ["data sets", "training sets"],
+            "systems": ["machines", "solutions", "tools"],
+            
+            # Verbi più umani
+            "subsequently": ["later", "then", "after that", "next"],
+            "previously": ["before", "earlier", "prior"],
+            "approximately": ["about", "around", "roughly"],
+            "achieve": ["reach", "attain", "get to"],
+            "require": ["need", "demand", "call for"],
+            "enable": ["allow", "let", "permit"],
+        }
+    
+    def get_phrase_patterns(self) -> Dict[str, List[str]]:
+        return {
+            r"\bWhat(?:'s| I've noticed| I noticed)?\s+(?:interesting|notable|cool|wild) is\b": [""],
+            r"\bWhat I've (?:noticed|found|seen) is\b": [""],
+            r"\bPersonally,?\s+I think\b": [""],
+            r"\bWhat matters is\b": [""],
+            r"\bThe thing is,?\b": [""],
+            r"\bHere's the thing,?\b": [""],
+            r"\bAt the end of the day,?\b": [""],
+            r"\bIt is important to note that\b": [""],
+            r"\bIt should be noted that\b": [""],
+            r"\bIt is worth noting that\b": [""],
+            r"\bIt is essential to\b": [""],
+            r"\bIn conclusion\b": [""],
+            r"\bIn summary\b": [""],
+            r"\bFurthermore,?\b": [""],
+            r"\bMoreover,?\b": [""],
+            r"\bAdditionally,?\b": [""],
+            r"\bConsequently,?\b": [""],
+            r"\bNevertheless,?\b": ["However"],
+            r"\bNotwithstanding,?\b": [""],
+            r"\bSubsequently,?\b": [""],
+            r"\bClearly,?\b": [""],
+            r"\bUndoubtedly,?\b": [""],
+            r"\bCertainly,?\b": [""],
+            r"\bObviously,?\b": [""],
+            r"\bAs an AI( language model)?\b": [""],
+        }
+    
+    def get_uncertainty_markers(self) -> List[str]:
+        return []  # Disabilitato per ZeroGPT
+
+class TextAnalyzer:
+    """Analizza il testo per determinare lo stile e il tono"""
+    
     def __init__(self):
-        # Dizionario sinonimi molto più esteso e contestuale
-        self.contextual_synonyms = {
-            # Verbi comuni AI
-            "analyze": ["examine", "look at", "check out", "dig into", "study", "review", "assess", "evaluate"],
-            "demonstrate": ["show", "prove", "illustrate", "make clear", "exhibit", "reveal", "display"],
-            "indicate": ["suggest", "point to", "hint at", "show", "reveal", "imply", "signal"],
-            "establish": ["set up", "create", "build", "form", "develop", "put in place", "institute"],
-            "facilitate": ["help", "make easier", "assist", "enable", "support", "aid", "smooth the way"],
-            "implement": ["put into action", "carry out", "execute", "apply", "use", "deploy", "roll out"],
-            "optimize": ["improve", "enhance", "perfect", "fine-tune", "make better", "streamline"],
-            
-            # Aggettivi formali tipici AI
-            "comprehensive": ["complete", "thorough", "extensive", "full", "detailed", "all-encompassing"],
-            "significant": ["important", "major", "big", "notable", "considerable", "meaningful"],
-            "substantial": ["large", "considerable", "major", "significant", "hefty", "sizable"],
-            "efficient": ["effective", "productive", "streamlined", "smooth", "well-organized"],
-            "robust": ["strong", "solid", "reliable", "sturdy", "durable", "stable"],
-            "innovative": ["creative", "new", "fresh", "original", "cutting-edge", "groundbreaking"],
-            
-            # Sostantivi formali
-            "methodology": ["method", "approach", "way", "system", "process", "technique"],
-            "framework": ["structure", "system", "model", "setup", "foundation", "base"],
-            "implementation": ["execution", "application", "use", "deployment", "rollout"],
-            "utilization": ["use", "usage", "application", "employment", "exploitation"]
-        }
-
-        # Pattern AI molto specifici da sostituire
-        self.ai_phrase_patterns = {
-            # Frasi di apertura tipiche AI
-            r"\bIt is important to note that\b": [
-                "Keep in mind that", "Worth mentioning", "Here's the thing", "What's interesting is",
-                "You should know", "Actually", "The reality is", "Honestly"
-            ],
-            r"\bIt should be noted that\b": [
-                "Also", "Plus", "What's worth noting", "By the way", "Another thing"
-            ],
-            r"\bIt is worth noting that\b": [
-                "Interestingly", "What's cool is", "Here's something", "Actually", "Get this"
-            ],
-            
-            # Transizioni robotiche
-            r"\bIn conclusion\b": [
-                "So basically", "Bottom line", "To wrap this up", "Long story short", 
-                "All in all", "When you boil it down", "At the end of the day"
-            ],
-            r"\bIn summary\b": [
-                "So", "Basically", "To sum it up", "In short", "All told"
-            ],
-            r"\bFurthermore\b": [
-                "Also", "Plus", "On top of that", "What's more", "And another thing",
-                "Not only that, but", "Beyond that"
-            ],
-            r"\bMoreover\b": [
-                "Also", "Plus", "And", "What's more", "On top of that", "Besides"
-            ],
-            r"\bAdditionally\b": [
-                "Also", "Plus", "And", "On top of that", "What's more", "Besides that"
-            ],
-            r"\bConsequently\b": [
-                "So", "As a result", "Because of this", "This means", "Therefore"
-            ],
-            
-            # Frasi di chiusura AI
-            r"\bOverall\b": [
-                "All in all", "Generally speaking", "For the most part", "By and large",
-                "On the whole", "Taking everything together"
-            ],
-            
-            # Pattern di certezza eccessiva
-            r"\bClearly\b": [
-                "Obviously", "It seems like", "Apparently", "From what I can tell", "Looks like"
-            ],
-            r"\bUndoubtedly\b": [
-                "Probably", "Most likely", "I'd say", "Seems like", "Pretty sure"
-            ],
-            r"\bCertainly\b": [
-                "Definitely", "For sure", "Absolutely", "No doubt", "Of course"
-            ]
-        }
-
-        # Marcatori di incertezza e soggettività umana
-        self.uncertainty_markers = [
-            "I think", "I believe", "It seems to me", "In my opinion", "From my perspective",
-            "I'd say", "I reckon", "My guess is", "I suspect", "It appears", "Probably",
-            "Maybe", "Perhaps", "Possibly", "Likely", "I'm not entirely sure, but"
-        ]
-
-        # Espressioni colloquiali e informali
-        self.colloquial_expressions = [
-            "you know", "I mean", "like", "sort of", "kind of", "basically", "actually",
-            "honestly", "frankly", "to be honest", "if you ask me", "the way I see it"
-        ]
-
-        # Connettori più naturali e vari
-        self.natural_connectors = [
-            "But here's the thing", "Now", "So", "Well", "Actually", "You see",
-            "The thing is", "What's interesting is", "Here's what happened", "Turns out"
-        ]
-
-        # Pattern di ripetizione e ridondanza (tipici umani)
-        self.redundancy_patterns = [
-            " - I mean, ", " - or rather, ", " - well, ", " - you know, ",
-            " (if that makes sense)", " (you get the idea)", " (or something like that)"
-        ]
-
-        # Errori grammaticali minori intenzionali
-        self.intentional_errors = {
-            " who ": [" who ", " that "],  # 70% who, 30% that per variazione
-            " which ": [" which ", " that "],
-            " different ": [" different ", " various ", " varying "],
-        }
-
-    def add_perplexity_variation(self, text):
-        """Aggiunge variazione nella scelta delle parole per aumentare la perplexity"""
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        modified_sentences = []
-        
-        for sentence in sentences:
-            words = sentence.split()
-            if len(words) > 5:  # Solo per frasi sufficientemente lunghe
-                # Cambia casualmente alcune parole con sinonimi meno ovvi
-                for i in range(len(words)):
-                    word = words[i].lower().strip('.,!?;:')
-                    if word in self.contextual_synonyms and random.random() < 0.3:
-                        # Sceglie sinonimo meno comune (non il primo della lista)
-                        synonyms = self.contextual_synonyms[word]
-                        if len(synonyms) > 1:
-                            # Preferisce sinonimi dalla metà della lista in poi
-                            preferred_syns = synonyms[len(synonyms)//2:]
-                            words[i] = words[i].replace(word, random.choice(preferred_syns))
-            
-            modified_sentences.append(' '.join(words))
-        
-        return ' '.join(modified_sentences)
-
-    def add_human_uncertainty(self, text):
-        """Aggiunge marcatori di incertezza tipicamente umani"""
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        
-        for i in range(len(sentences)):
-            if random.random() < 0.2:  # 20% delle frasi
-                uncertainty = random.choice(self.uncertainty_markers)
-                # Inserisce l'incertezza in posizioni naturali
-                if sentences[i].startswith(('The ', 'This ', 'That ')):
-                    sentences[i] = uncertainty + ", " + sentences[i].lower()
-                else:
-                    sentences[i] = uncertainty + " " + sentences[i].lower()
-        
-        return ' '.join(sentences)
-
-    def add_conversational_flow(self, text):
-        """Aggiunge elementi di conversazione naturale"""
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        
-        for i in range(len(sentences)):
-            # Aggiunge espressioni colloquiali
-            if random.random() < 0.15:
-                colloquial = random.choice(self.colloquial_expressions)
-                # Inserisce in posizioni strategiche
-                words = sentences[i].split()
-                if len(words) > 4:
-                    insert_pos = random.randint(2, len(words)-2)
-                    words.insert(insert_pos, f"({colloquial})")
-                    sentences[i] = ' '.join(words)
-            
-            # Aggiunge connettori naturali all'inizio di alcune frasi
-            if i > 0 and random.random() < 0.1:
-                connector = random.choice(self.natural_connectors)
-                sentences[i] = connector + ", " + sentences[i].lower()
-        
-        return ' '.join(sentences)
-
-    def vary_sentence_structure(self, text):
-        """Varia la struttura delle frasi per sembrare più umano"""
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        modified = []
-        
-        for sentence in sentences:
-            words = sentence.split()
-            
-            # Occasionalmente divide frasi lunghe
-            if len(words) > 20 and random.random() < 0.4:
-                mid_point = len(words) // 2
-                # Trova una buona posizione per dividere
-                for j in range(mid_point-3, mid_point+3):
-                    if j < len(words) and words[j].endswith((',', ';')):
-                        first_part = ' '.join(words[:j+1])
-                        second_part = ' '.join(words[j+1:])
-                        modified.append(first_part)
-                        modified.append(second_part)
-                        break
-                else:
-                    # Se non trova virgole, divide comunque
-                    first_part = ' '.join(words[:mid_point]) + ","
-                    second_part = ' '.join(words[mid_point:])
-                    modified.append(first_part)
-                    modified.append(second_part)
-            else:
-                # Occasionalmente inizia con congiunzioni
-                if random.random() < 0.1 and len(modified) > 0:
-                    conjunctions = ["But", "And", "So", "Yet", "Still"]
-                    sentence = random.choice(conjunctions) + " " + sentence.lower()
-                
-                modified.append(sentence)
-        
-        return ' '.join(modified)
-
-    def add_personal_touches(self, text):
-        """Aggiunge tocchi personali e soggettivi"""
-        personal_intros = [
-            "In my experience, ", "What I've noticed is ", "From what I've seen, ",
-            "I've found that ", "What strikes me is ", "Personally, I think "
+        self.formal_indicators = [
+            'moreover', 'furthermore', 'consequently', 'thus', 'therefore',
+            'nevertheless', 'notwithstanding', 'subsequently', 'accordingly',
+            'hence', 'wherein', 'whereby', 'henceforth'
         ]
         
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        
-        # Aggiunge introduzioni personali ad alcune frasi
-        for i in range(len(sentences)):
-            if i == 0 or (random.random() < 0.1 and i > 2):
-                intro = random.choice(personal_intros)
-                sentences[i] = intro + sentences[i].lower()
-        
-        return ' '.join(sentences)
-
-    def add_hesitation_and_correction(self, text):
-        """Aggiunge esitazioni e auto-correzioni tipiche del linguaggio umano"""
-        correction_patterns = [
-            " - well, actually, ", " - or should I say, ", " - I mean, ",
-            " - at least, that's what I think", " - though I could be wrong"
+        self.technical_indicators = [
+            'algorithm', 'function', 'parameter', 'variable', 'implementation',
+            'methodology', 'framework', 'architecture', 'protocol', 'interface',
+            'optimization', 'configuration', 'initialization', 'instantiation'
         ]
         
-        sentences = text.split('. ')
+        self.casual_indicators = [
+            "you know", "I mean", "like", "basically", "actually", "honestly",
+            "really", "pretty", "quite", "just", "maybe", "kinda", "sorta"
+        ]
         
-        for i in range(len(sentences)):
-            if random.random() < 0.08:  # 8% delle frasi
-                words = sentences[i].split()
-                if len(words) > 6:
-                    insert_pos = random.randint(3, len(words)-2)
-                    correction = random.choice(correction_patterns)
-                    words.insert(insert_pos, correction)
-                    sentences[i] = ' '.join(words)
+        self.human_indicators_patterns = [
+            r'[!]{1,3}', r'[?]', r'[\U0001F600-\U0001F64F]',
+            r'\b(I\'m|I\'ve|I\'ll|can\'t|won\'t|don\'t)\b',
+            r'\b(my|our|we|us)\b',
+        ]
+    
+    def analyze(self, text: str) -> TextAnalysis:
+        sentences = self._split_sentences(text)
+        words = text.split()
+        words_clean = [w.lower().strip('.,!?;:()[]{}') for w in words if w.strip()]
         
-        return '. '.join(sentences)
+        word_count = len(words_clean)
+        sentence_count = len(sentences)
+        paragraph_count = text.count('\n\n') + 1
+        avg_sentence_length = word_count / sentence_count if sentence_count > 0 else 0
+        unique_words = len(set(words_clean))
+        unique_word_ratio = unique_words / word_count if word_count > 0 else 0
+        complex_words = [w for w in words_clean if len(w) > 12]
+        vocabulary_complexity = len(complex_words) / word_count if word_count > 0 else 0
+        
+        formal_count = sum(1 for word in words_clean if word in self.formal_indicators)
+        casual_count = sum(1 for word in words_clean if word in self.casual_indicators)
+        formality_score = min(10, max(0, (formal_count / sentence_count * 30) - (casual_count / sentence_count * 20)))
+        
+        technical_count = sum(1 for word in words_clean if word in self.technical_indicators)
+        technical_score = min(10, (technical_count / sentence_count) * 40 + vocabulary_complexity * 30)
+        
+        target_tone = self._determine_tone(formality_score, technical_score, casual_count)
+        is_already_human = self._is_already_human(text, formality_score, casual_count)
+        existing_colloquial = sum(1 for indicator in self.casual_indicators 
+                                 if re.search(r'\b' + re.escape(indicator) + r'\b', text.lower()))
+        
+        return TextAnalysis(
+            formality_score=formality_score,
+            technical_score=technical_score,
+            avg_sentence_length=avg_sentence_length,
+            vocabulary_complexity=vocabulary_complexity,
+            target_tone=target_tone,
+            paragraph_count=paragraph_count,
+            sentence_count=sentence_count,
+            word_count=word_count,
+            unique_word_ratio=unique_word_ratio,
+            is_already_human=is_already_human,
+            existing_colloquial_count=existing_colloquial
+        )
+    
+    def _is_already_human(self, text: str, formality_score: float, casual_count: int) -> bool:
+        human_score = 0
+        for pattern in self.human_indicators_patterns:
+            if re.search(pattern, text):
+                human_score += 1
+        if formality_score < 4:
+            human_score += 1
+        if casual_count >= 3:
+            human_score += 1
+        if re.search(r'\b(I|my|our)\b', text):
+            human_score += 1
+        return human_score >= 3
+    
+    def _split_sentences(self, text: str) -> List[str]:
+        sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|\!)\s', text)
+        return [s.strip() for s in sentences if s.strip()]
+    
+    def _determine_tone(self, formality: float, technicality: float, casual_count: int) -> str:
+        if formality > 7:
+            return 'formal'
+        elif technicality > 6:
+            return 'technical'
+        elif casual_count > 5 or formality < 3:
+            return 'casual'
+        elif formality > 5 and technicality > 4:
+            return 'professional'
+        else:
+            return 'neutral'
 
-    def reduce_ai_vocabulary(self, text):
-        """Sostituisce parole tipicamente AI con alternative più umane"""
-        # Sostituzioni specifiche per vocabolario AI
-        ai_vocab_replacements = {
-            "utilize": "use",
-            "facilitate": "help",
-            "demonstrate": "show",
-            "indicate": "suggest",
-            "substantial": "big",
-            "comprehensive": "complete",
-            "methodology": "method",
-            "implementation": "use",
-            "optimization": "improvement",
-            "enhancement": "improvement",
-            "parameter": "setting",
-            "paradigm": "approach",
-            "infrastructure": "system",
-            "instantiate": "create",
-            "aggregation": "combination",
-            "preliminary": "initial",
+class ModificationEngine:
+    """Engine per applicare modifiche intelligenti al testo"""
+    
+    def __init__(self, language_processor: LanguageProcessor):
+        self.lang = language_processor
+        self.recently_used = deque(maxlen=50)
+        self.used_in_current_text = set()
+        
+    def reset_current_text_tracking(self):
+        self.used_in_current_text.clear()
+        
+    def get_config_for_tone(self, tone: str, is_already_human: bool) -> ModificationConfig:
+        if is_already_human:
+            return ModificationConfig(
+                uncertainty_probability=0.0,
+                colloquial_probability=0.0,
+                sentence_variation=0.0,
+                personal_touches=0.0,
+                synonym_replacement=0.12,
+                structure_modification=0.0,
+                max_modifications_per_sentence=1
+            )
+        
+        return ModificationConfig(
+            uncertainty_probability=0.0,
+            colloquial_probability=0.0,
+            sentence_variation=0.0,
+            personal_touches=0.0,
+            synonym_replacement=0.40,  # Aumentato per più sostituzioni
+            structure_modification=0.0,
+            max_modifications_per_sentence=1
+        )
+    
+    def replace_ai_phrases(self, text: str) -> str:
+        """Sostituisce frasi tipicamente AI"""
+        for pattern, replacements in self.lang.get_phrase_patterns().items():
+            text = re.sub(pattern, lambda m: random.choice(replacements) if replacements else "", text, flags=re.IGNORECASE)
+        return text
+    
+    def restructure_nominal_phrases(self, text: str) -> str:
+        """NUOVO: Trasforma frasi nominali in verbali"""
+        patterns = {
+            r'The implementation of ([a-z\s]+)': r'\1 application',
+            r'The optimization of ([a-z\s]+)': r'Optimizing \1',
+            r'The development of ([a-z\s]+)': r'Developing \1',
+            r'The establishment of ([a-z\s]+)': r'Establishing \1',
+            r'The integration of ([a-z\s]+)': r'Integrating \1',
+            r'The utilization of ([a-z\s]+)': r'Using \1',
         }
         
-        for ai_word, human_word in ai_vocab_replacements.items():
-            text = re.sub(r'\b' + ai_word + r'\b', human_word, text, flags=re.IGNORECASE)
+        for pattern, replacement in patterns.items():
+            text = re.sub(pattern, replacement, text)
         
         return text
-
-    def vary_sentence_length_naturally(self, text):
-        """Crea variazione naturale nella lunghezza delle frasi"""
-        sentences = re.split(r'(?<=[.!?])\s+', text)
+    
+    def reduce_the_repetition(self, text: str) -> str:
+        """NUOVO: Riduce 'The' ripetitivo all'inizio delle frasi"""
+        sentences = self._split_sentences_advanced(text)
+        the_count = 0
         result = []
         
-        i = 0
-        while i < len(sentences):
-            current = sentences[i]
-            words = current.split()
-            
-            # Se la frase è molto lunga, prova a spezzarla
-            if len(words) > 25:
-                # Cerca punti naturali di divisione
-                for j in range(10, len(words)-5):
-                    if words[j] in ['and', 'but', 'or', 'because', 'since', 'while', 'when']:
-                        part1 = ' '.join(words[:j]) + '.'
-                        part2 = ' '.join(words[j:])
-                        result.append(part1)
-                        result.append(part2)
-                        break
+        for sentence in sentences:
+            if sentence.startswith('The '):
+                the_count += 1
+                if the_count > 2:  # Max 2 "The" consecutive
+                    # Rimuovi "The" e adatta la frase
+                    modified = sentence[4:]  # Rimuovi "The "
+                    if modified:
+                        modified = modified[0].upper() + modified[1:]
+                        result.append(modified)
+                        the_count = 0
                 else:
-                    result.append(current)
-            
-            # Se la frase è molto corta, occasionalmente combinala con la successiva
-            elif len(words) < 5 and i < len(sentences) - 1 and random.random() < 0.3:
-                next_sentence = sentences[i + 1]
-                combined = current.rstrip('.!?') + ', and ' + next_sentence.lower()
-                result.append(combined)
-                i += 1  # Salta la prossima frase
+                    result.append(sentence)
             else:
-                result.append(current)
-            
-            i += 1
+                the_count = 0
+                result.append(sentence)
         
         return ' '.join(result)
-
-    def humanize(self, text):
-        """Processo completo di umanizzazione"""
-        # Fase 1: Rimozione pattern AI evidenti
-        for pattern, replacements in self.ai_phrase_patterns.items():
-            text = re.sub(pattern, lambda _: random.choice(replacements), text)
+    
+    def add_human_imperfections(self, text: str) -> str:
+        """NUOVO: Aggiunge costruzioni leggermente awkward ma umane"""
+        patterns = {
+            r'to achieve (\w+) performance': r'in their efforts to maximize \1',
+            r'to achieve optimal': r'working towards best',
+            r'while maintaining (\w+) standards': r'amidst keeping \1 standards intact',
+            r'(\w+) numerous industries': r'\1 world of various industries',
+            r'for automated decisions': r'for decisions made independently',
+            r'throughout the (\w+) process': r'during \1',
+        }
         
-        # Fase 2: Riduzione vocabolario AI
-        text = self.reduce_ai_vocabulary(text)
-        
-        # Fase 3: Aggiunta variazione perplexity
-        text = self.add_perplexity_variation(text)
-        
-        # Fase 4: Aggiunta incertezza umana
-        text = self.add_human_uncertainty(text)
-        
-        # Fase 5: Flusso conversazionale
-        text = self.add_conversational_flow(text)
-        
-        # Fase 6: Variazione struttura frasi
-        text = self.vary_sentence_structure(text)
-        
-        # Fase 7: Tocchi personali
-        text = self.add_personal_touches(text)
-        
-        # Fase 8: Esitazioni e correzioni
-        text = self.add_hesitation_and_correction(text)
-        
-        # Fase 9: Variazione lunghezza frasi
-        text = self.vary_sentence_length_naturally(text)
-        
-        # Fase 10: Pulizia finale
-        text = re.sub(r'\s+', ' ', text)  # Rimuove spazi multipli
-        text = re.sub(r' ,', ',', text)   # Corregge spazi prima delle virgole
-        text = text.strip()
+        for pattern, replacement in patterns.items():
+            if random.random() < 0.6:  # 60% probabilità
+                text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
         
         return text
+    
+    def replace_synonyms_contextual(self, text: str, config: ModificationConfig, formality_level: str) -> str:
+        """Sostituisce parole con sinonimi contestuali"""
+        words = text.split()
+        synonyms_dict = self.lang.get_synonyms()
+        
+        for i, word in enumerate(words):
+            word_clean = word.lower().strip('.,!?;:()[]{}')
+            
+            if word_clean in synonyms_dict and random.random() < config.synonym_replacement:
+                if word_clean in list(self.recently_used)[-5:]:
+                    continue
+                
+                synonym = self._choose_best_synonym(
+                    word_clean, 
+                    synonyms_dict[word_clean],
+                    formality_level
+                )
+                
+                if word[0].isupper():
+                    synonym = synonym.capitalize()
+                
+                punctuation = ''.join(c for c in word if c in '.,!?;:')
+                words[i] = synonym + punctuation
+                self.recently_used.append(word_clean)
+        
+        return ' '.join(words)
+    
+    def _choose_best_synonym(self, word: str, synonyms: List[str], formality: str) -> str:
+        """Sceglie il sinonimo migliore"""
+        scored = []
+        
+        for syn in synonyms:
+            score = 0
+            
+            # Preferisci sinonimi più corti e naturali
+            score += (15 - len(syn) * 0.5)
+            
+            # Evita ripetizioni recenti
+            if syn not in self.recently_used:
+                score += 10
+            
+            # Preferisci sinonimi nel mezzo della lista
+            middle_idx = len(synonyms) // 2
+            distance_from_middle = abs(synonyms.index(syn) - middle_idx)
+            score += (10 - distance_from_middle)
+            
+            scored.append((syn, score))
+        
+        top_syns = sorted(scored, key=lambda x: x[1], reverse=True)[:3]
+        return random.choice(top_syns)[0]
+    
+    def _split_sentences_advanced(self, text: str) -> List[str]:
+        """Split avanzato delle frasi"""
+        if not isinstance(text, str) or not text.strip():
+            return []
+        sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|\!)\s+', text)
+        return [s.strip() for s in sentences if s and s.strip()]
+
+class Humanizer:
+    """Humanizer principale - Ottimizzato per ZeroGPT 0%"""
+    
+    def __init__(self, language: str = 'en'):
+        self.language = language
+        self.lang_processor = EnglishProcessor()
+        self.analyzer = TextAnalyzer()
+        self.modifier = ModificationEngine(self.lang_processor)
+        
+    def humanize(self, text: str, intensity: float = 0.6, preserve_formatting: bool = True) -> Dict:
+        """
+        Umanizza il testo - Ottimizzato per ZeroGPT
+        
+        Args:
+            text: Testo da umanizzare
+            intensity: Livello di modifiche (0.0-1.0) - DEFAULT 0.6
+            preserve_formatting: Mantiene formattazione originale
+            
+        Returns:
+            Dict con testo umanizzato e metriche
+        """
+        if not text or len(text.strip()) < 10:
+            return {
+                'original': text,
+                'humanized': text,
+                'analysis': None,
+                'modifications_applied': 0
+            }
+        
+        self.modifier.reset_current_text_tracking()
+        analysis = self.analyzer.analyze(text)
+        base_config = self.modifier.get_config_for_tone(analysis.target_tone, analysis.is_already_human)
+        
+        if analysis.is_already_human:
+            intensity = min(intensity * 0.15, 0.1)
+        
+        scaled_config = self._scale_config(base_config, intensity)
+        modified_text = text
+        modifications_count = 0
+        
+        try:
+            # Step 1: Rimuovi frasi AI
+            modified_text = self.modifier.replace_ai_phrases(modified_text)
+            modifications_count += 1
+            
+            if not analysis.is_already_human:
+                # Step 2: Trasforma strutture nominali
+                modified_text = self.modifier.restructure_nominal_phrases(modified_text)
+                modifications_count += 1
+                
+                # Step 3: Sostituisci sinonimi
+                modified_text = self.modifier.replace_synonyms_contextual(
+                    modified_text, scaled_config, analysis.target_tone
+                )
+                modifications_count += 1
+                
+                # Step 4: Riduci "The" ripetitivo
+                modified_text = self.modifier.reduce_the_repetition(modified_text)
+                modifications_count += 1
+                
+                # Step 5: Aggiungi imperfezioni umane
+                modified_text = self.modifier.add_human_imperfections(modified_text)
+                modifications_count += 1
+            
+            # Step 6: Pulizia finale
+            modified_text = self._intelligent_cleanup(modified_text)
+            
+        except Exception as e:
+            print(f"Error during humanization: {e}")
+            modified_text = text
+        
+        quality_metrics = self._calculate_quality_metrics(text, modified_text)
+        
+        return {
+            'original': text,
+            'humanized': modified_text,
+            'analysis': analysis,
+            'config_used': scaled_config,
+            'modifications_applied': modifications_count,
+            'quality_metrics': quality_metrics,
+            'was_already_human': analysis.is_already_human
+        }
+    
+    def _scale_config(self, config: ModificationConfig, intensity: float) -> ModificationConfig:
+        """Scala la configurazione in base all'intensità"""
+        return ModificationConfig(
+            uncertainty_probability=config.uncertainty_probability * intensity,
+            colloquial_probability=config.colloquial_probability * intensity,
+            sentence_variation=config.sentence_variation * intensity,
+            personal_touches=config.personal_touches * intensity,
+            synonym_replacement=config.synonym_replacement * intensity,
+            structure_modification=config.structure_modification * intensity,
+            max_modifications_per_sentence=config.max_modifications_per_sentence
+        )
+    
+    def _intelligent_cleanup(self, text: str) -> str:
+        """Pulizia intelligente del testo"""
+        # Fix spazi
+        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r'\s+([.,!?;:])', r'\1', text)
+        
+        # Rimuovi em-dash
+        text = re.sub(r'[\s\xa0\u00A0]*[\u2014\u2013\u2012\u2015—–-]{1,3}[\s\xa0\u00A0]*', ', ', text)
+        
+        # Ripristina parole composte con trattino
+        compound_words = [
+            'decision-making', 'well-being', 'long-term', 'real-time',
+            'short-term', 'high-quality', 'low-cost', 'full-time',
+            'part-time', 'state-of-the-art', 'up-to-date'
+        ]
+        
+        for compound in compound_words:
+            broken = compound.replace('-', ',\s*')
+            text = re.sub(r'\b' + broken + r'\b', compound, text, flags=re.IGNORECASE)
+        
+        # Rimuovi connettori doppi
+        text = re.sub(r'\b(So|But|Well|Now|Also|Plus),\s+(So|But|Well|Now|Also|Plus)\b', 
+                     r'\1', text, flags=re.IGNORECASE)
+        
+        # Fix capitalizzazione random in mezzo alle frasi
+        words = text.split()
+        for i in range(1, len(words)):
+            word = words[i]
+            if word and len(word) > 2 and word[0].isupper():
+                if not words[i-1].endswith(('.', '!', '?')):
+                    if word.lower() not in ['ai', 'api', 'http', 'sql', 'xml', 'html', 'css', 'json', 'url']:
+                        words[i] = word[0].lower() + word[1:]
+        text = ' '.join(words)
+        
+        # Rimuovi pattern AI residui
+        text = re.sub(r'\bSubsequently,?\s+', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bFurthermore,?\s+', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bMoreover,?\s+', '', text, flags=re.IGNORECASE)
+        
+        # Fix punteggiatura
+        text = re.sub(r'\.\s*,\s*', '. ', text)
+        text = re.sub(r',\s+\.', '.', text)
+        text = re.sub(r',\s*,+', ',', text)
+        text = re.sub(r'\.\.+', '.', text)
+        
+        # Rimuovi spazi doppi
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Fix capitalizzazione inizio frasi
+        sentences = re.split(r'([.!?]\s+)', text)
+        for i in range(len(sentences)):
+            if sentences[i] and len(sentences[i]) > 0 and sentences[i][0].isalpha():
+                sentences[i] = sentences[i][0].upper() + sentences[i][1:]
+        text = ''.join(sentences)
+        
+        # Fix prima lettera del testo
+        if text and text[0].islower():
+            text = text[0].upper() + text[1:]
+        
+        return text.strip()
+    
+    def _calculate_quality_metrics(self, original: str, modified: str) -> Dict:
+        """Calcola metriche di qualità dell'umanizzazione"""
+        if not isinstance(original, str):
+            original = str(original) if original else ""
+        if not isinstance(modified, str):
+            modified = str(modified) if modified else ""
+        
+        if not original or not modified:
+            return {
+                'vocabulary_change_ratio': 0.0,
+                'burstiness_increase': 0.0,
+                'tone_preserved': True,
+                'original_tone': 'neutral',
+                'length_change_percent': 0.0,
+                'formality_shift': 0.0,
+                'readability_maintained': True
+            }
+
+        orig_analysis = self.analyzer.analyze(original)
+        mod_analysis = self.analyzer.analyze(modified)
+        
+        orig_words = set(original.lower().split())
+        mod_words = set(modified.lower().split())
+        vocabulary_change = len(mod_words - orig_words) / len(orig_words) if orig_words else 0
+        
+        orig_sentences = self.analyzer._split_sentences(original)
+        mod_sentences = self.analyzer._split_sentences(modified)
+        
+        orig_lengths = [len(s.split()) for s in orig_sentences]
+        mod_lengths = [len(s.split()) for s in mod_sentences]
+        
+        orig_variance = self._calculate_variance(orig_lengths)
+        mod_variance = self._calculate_variance(mod_lengths)
+        burstiness_increase = (mod_variance - orig_variance) / (orig_variance + 1)
+        
+        tone_preserved = orig_analysis.target_tone == mod_analysis.target_tone
+        length_change = (len(modified) - len(original)) / len(original) * 100 if original else 0
+        
+        return {
+            'vocabulary_change_ratio': round(vocabulary_change, 3),
+            'burstiness_increase': round(burstiness_increase, 3),
+            'tone_preserved': tone_preserved,
+            'original_tone': orig_analysis.target_tone,
+            'length_change_percent': round(length_change, 2),
+            'formality_shift': round(mod_analysis.formality_score - orig_analysis.formality_score, 2),
+            'readability_maintained': abs(length_change) < 10
+        }
+    
+    def _calculate_variance(self, numbers: List[int]) -> float:
+        """Calcola la varianza"""
+        if not numbers:
+            return 0
+        mean = sum(numbers) / len(numbers)
+        variance = sum((x - mean) ** 2 for x in numbers) / len(numbers)
+        return variance
+    
+    def batch_humanize(self, texts: List[str], intensity: float = 0.6) -> List[Dict]:
+        """Umanizza batch di testi"""
+        results = []
+        for text in texts:
+            result = self.humanize(text, intensity)
+            results.append(result)
+        return results
+    
+    def get_analysis_only(self, text: str) -> TextAnalysis:
+        """Restituisce solo l'analisi"""
+        return self.analyzer.analyze(text)
+
+
+class HumanizerEvaluator:
+    """Valuta la qualità dell'umanizzazione"""
+    
+    @staticmethod
+    def evaluate_ai_detection_evasion(text: str) -> Dict:
+        """Simula detection AI"""
+        score = 100.0
+        issues = []
+        
+        ai_patterns = [
+            (r'\b(furthermore|moreover|additionally|consequently|subsequently)\b', -4, "Formal transitions"),
+            (r'\bIt is important to note that\b', -5, "AI opening phrase"),
+            (r'\b(comprehensive|robust|leverage|utilize|facilitate)\b', -2, "AI vocabulary"),
+            (r'\.\s+The\s+', -1, "Monotonous sentence starts"),
+            (r',\s+(making|being|term)\b', -3, "Broken compound words"),
+            (r'\b(So|But|Also),\s+(So|But|Also)\b', -4, "Double connectors"),
+            (r'The \w+ of', -0.5, "Nominal phrase pattern"),
+        ]
+        
+        for pattern, penalty, description in ai_patterns:
+            matches = len(re.findall(pattern, text, re.IGNORECASE))
+            if matches > 0:
+                score += penalty * matches
+                issues.append(f"{description}: {matches} occurrences")
+        
+        score = max(0, min(100, score))
+        
+        return {
+            'evasion_score': round(score, 2),
+            'detection_risk': 'low' if score > 85 else 'medium' if score > 70 else 'high',
+            'issues_found': issues,
+            'recommendation': 'Excellent' if score > 85 else 'Good' if score > 70 else 'Needs improvement'
+        }
+    
+    @staticmethod
+    def compare_versions(original: str, humanized: str) -> Dict:
+        """Confronta versione originale e umanizzata"""
+        orig_detection = HumanizerEvaluator.evaluate_ai_detection_evasion(original)
+        human_detection = HumanizerEvaluator.evaluate_ai_detection_evasion(humanized)
+        improvement = human_detection['evasion_score'] - orig_detection['evasion_score']
+        
+        return {
+            'original_score': orig_detection['evasion_score'],
+            'humanized_score': human_detection['evasion_score'],
+            'improvement': round(improvement, 2),
+            'original_risk': orig_detection['detection_risk'],
+            'humanized_risk': human_detection['detection_risk'],
+            'original_issues': len(orig_detection['issues_found']),
+            'humanized_issues': len(human_detection['issues_found']),
+            'recommendation': 'Excellent humanization' if improvement > 15 else 'Good humanization' if improvement > 5 else 'Minimal improvement'
+        }
+
+
+def humanize_text(text: str, intensity: float = 0.6, language: str = 'en') -> str:
+    """Funzione rapida per umanizzare testo"""
+    humanizer = Humanizer(language=language)
+    result = humanizer.humanize(text, intensity=intensity)
+    return result['humanized']
+
+def analyze_text(text: str, language: str = 'en') -> TextAnalysis:
+    """Funzione rapida per analizzare testo"""
+    humanizer = Humanizer(language=language)
+    return humanizer.get_analysis_only(text)
+
+def evaluate_humanization(original: str, humanized: str) -> Dict:
+    """Funzione rapida per valutare qualità umanizzazione"""
+    return HumanizerEvaluator.compare_versions(original, humanized)

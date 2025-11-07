@@ -3,6 +3,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+from pyasn1.type.univ import Null
 import requests
 from datetime import datetime, timedelta, timezone
 import uuid
@@ -17,12 +18,16 @@ from app.schemas.auth import (
     GoogleTokenRequest,
     AuthResponse,
     UserResponse,
+    VerificationEmailRequestRequest,
     GoogleAuthUrlResponse,
     UserRegisterRequest,
-    UserLoginRequest
+    UserLoginRequest,
+    VerificationTokenRequest
 )
 from app.core.logging import SupabaseAPILogger, log_request, log_security_event
+from app.workers.tasks import send_verification_email_task
 import time
+import uuid
 
 from app.services import email_service
 
@@ -32,7 +37,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 api_logger = SupabaseAPILogger(supabase_client)
 
 # ================================
-# UTILITY FUNCTIONS CORRETTE PER UTC
+# UTILITY FUNCTIONS
 # ================================
 
 def get_utc_now() -> str:
@@ -42,6 +47,9 @@ def get_utc_now() -> str:
 def get_utc_datetime() -> datetime:
     """Restituisce un datetime UTC per calcoli interni"""
     return datetime.now(timezone.utc)
+
+def get_verification_token() -> str:
+    return str(uuid.uuid4())
 
 def serialize_datetime_fields(data: dict) -> dict:
     """Converte tutti i campi datetime in stringhe ISO con timezone UTC"""
@@ -89,7 +97,7 @@ def debug_request_info(request: Request):
         print(f"🔐 User-Agent: {request.headers.get('user-agent', 'Unknown')[:50]}...")
         print(f"⚙️ Frontend URL: {os.getenv('FRONTEND_URL')}")
 
-def create_access_token(data: dict, expires_delta: int = 900):  # 15 minuti
+def create_access_token(data: dict, expires_delta: int = 604800):  # 7 giorni
     """Token di accesso di breve durata"""
     to_encode = data.copy()
     expire = get_utc_datetime() + timedelta(seconds=expires_delta)
@@ -114,7 +122,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str):
     response.set_cookie(
         key="access_token",
         value=access_token,
-        max_age=900,  # 15 minuti
+        max_age=604800,  # 7 giorni
         expires=get_utc_datetime() + timedelta(minutes=15),
         **cookie_settings
     )
@@ -327,8 +335,8 @@ async def google_callback(request: Request):
             user_data = user_response.data[0]
             user_id = user_data["id"]
             
-            # Aggiorna timestamp con UTC corretto
-            update_data = {"updated_at": get_utc_now()}
+            # Aggiorno timestamp e nel dubbio metto sempre che è verificato, con Google è sempre corretto
+            update_data = {"updated_at": get_utc_now(), "isVerified": True}
             supabase_client.table("users").update(update_data).eq("id", user_id).execute()
             
             action = "google_login_existing_user"
@@ -346,7 +354,8 @@ async def google_callback(request: Request):
                 "google_id": google_id,
                 "created_at": current_time,
                 "updated_at": current_time,
-                "password_hash": None
+                "password_hash": None,
+                "isVerified": True
             }
             
             result = supabase_client.table("users").insert(new_user).execute()
@@ -416,6 +425,221 @@ async def google_callback(request: Request):
             error=str(e)
         )
         raise HTTPException(status_code=500, detail=f"Errore autenticazione: {str(e)}")
+
+#Creo un endpoint che accoda una task per mandare email di verifica esistenza
+@router.post("/verifyEmail")
+async def verifyUserEmail(verification_data: VerificationEmailRequestRequest, request: Request):
+    """Metodo per inviare email di conferma account"""
+    
+    debug_request_info(request)
+    
+    try:
+        if not verification_data.email:
+            try:
+                await log_security_event(
+                    supabase_client=supabase_client,
+                    event="verification_fail",
+                    client_ip=api_logger._get_client_ip(request),
+                    details=f"Email: {verification_data.email}"
+                )
+            except Exception as log_error:
+                print(f"WARNING: Failed to log security event: {str(log_error)}")
+                
+            raise HTTPException(
+                status_code=401, 
+                detail={
+                    "code": "INVALID_CREDENTIALS",
+                    "message": "Email non corretta"
+                }
+            )   
+
+        # Trova utente
+        user_result = supabase_client.table("users").select("*").eq("email", verification_data.email).execute()
+
+        if not user_result.data:
+            try:
+                await log_security_event(
+                    supabase_client=supabase_client,
+                    event="login_fail",
+                    client_ip=api_logger._get_client_ip(request),
+                    details=f"Email: {verification_data.email}"
+                )
+            except Exception as log_error:
+                print(f"WARNING: Failed to log security event: {str(log_error)}")
+                
+            raise HTTPException(
+                status_code=401, 
+                detail={
+                    "code": "INVALID_CREDENTIALS",
+                    "message": "Email non corretta"
+                }
+            )
+        
+        user_record = user_result.data[0]
+        user_token = user_record["verification_token"]
+        
+        # Verifico che il token ci sia, se cosi non fosse, ne genero uno ora
+        if not user_token:
+            user_token = get_verification_token()
+
+            update_data = {"verification_token": user_token}
+
+            #Lo salvo su database e refresho
+            result = (
+                        supabase_client
+                        .table("users")
+                        .update(update_data)
+                        .eq("email", user_record["email"])
+                        .execute()
+                    )
+
+            #Rifaccio il get per refreshare il token direttamente in user_result
+            user_result = supabase_client.table("users").select("*").eq("email", verification_data.email).execute()
+
+        #Una volta trovato o generato il token, posso procedere con l'invio della email  
+        email_task = send_verification_email_task.apply_async(
+            kwargs={
+                'email_data': {
+                    'to_email': verification_data.email,
+                    'username': user_record.get("full_name") if user_record.get("full_name") else verification_data.email,
+                    'verificationToken': user_token,
+                }
+            },
+            queue="emails",
+            priority=6,
+            retry=True,
+            retry_policy={
+                'max_retries': 3,
+                'interval_start': 60,
+                'interval_step': 60,
+                'interval_max': 300
+            }
+        )
+
+        response_data = {
+            "success": True
+        }
+        
+        response = JSONResponse(content=response_data)
+        
+        print(f"DEBUG: Email verification completed successfully for {verification_data.email}")
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"ERROR: Login failed for {verification_data.email}: {str(e)}")
+        print(f"ERROR: Exception type: {type(e).__name__}")
+
+#Creo un endpoint che verifichi se il token corrisponde a quello generato e verifica la mail
+@router.post("/verifyToken")
+async def verifyUserEmail(verification_data: VerificationTokenRequest, request: Request):
+    """Metodo per verificare il token"""
+
+    try:
+        if not verification_data.email:
+            try:
+                await log_security_event(
+                    supabase_client=supabase_client,
+                    event="verification_fail",
+                    client_ip=api_logger._get_client_ip(request),
+                    details=f"Email not found"
+                )
+            except Exception as log_error:
+                print(f"WARNING: Failed to log security event: {str(log_error)}")
+                
+            raise HTTPException(
+                status_code=401, 
+                detail={
+                    "code": "INVALID_CREDENTIALS",
+                    "message": "Email non corretta"
+                }
+            )   
+
+        # Trova utente
+        user_result = supabase_client.table("users").select("*").eq("email", verification_data.email).execute()
+
+        if not user_result.data:
+            try:
+                await log_security_event(
+                    supabase_client=supabase_client,
+                    event="login_fail",
+                    client_ip=api_logger._get_client_ip(request),
+                    details=f"Email: {verification_data.email}"
+                )
+            except Exception as log_error:
+                print(f"WARNING: Failed to log security event: {str(log_error)}")
+                
+            raise HTTPException(
+                status_code=401, 
+                detail={
+                    "code": "INVALID_CREDENTIALS",
+                    "message": "Email non corretta"
+                }
+            )
+        
+        user_record = user_result.data[0]
+        user_token = user_record["verification_token"]
+        
+        # Verifico che il token ci sia, se cosi non fosse, ne genero uno ora
+        if not user_token:
+            try:
+                await log_security_event(
+                    supabase_client=supabase_client,
+                    event="login_fail",
+                    client_ip=api_logger._get_client_ip(request),
+                    details=f"Email: {verification_data.email}"
+                )
+            except Exception as log_error:
+                print(f"WARNING: Token not found: {str(log_error)}")
+                
+            raise HTTPException(
+                status_code=401, 
+                detail={
+                    "code": "INVALID_CREDENTIALS",
+                    "message": "Token non trovato"
+                }
+            )
+
+        #Una volta trovato o generato il token, controllo che sia uguale a quello passato al metodo
+        if user_token == verification_data.token:
+            update_data = {"isVerified": True}
+
+            #Salvo su db la verifica e ritorno
+            result = (
+                        supabase_client
+                        .table("users")
+                        .update(update_data)
+                        .eq("email", user_record["email"])
+                        .execute()
+                    )
+            
+            response_data = {
+                "success": True
+            }
+        else:
+            raise HTTPException(
+                status_code=401, 
+                detail={
+                    "code": "INVALID_TOKEN",
+                    "message": "Token non valido"
+                }
+            )
+
+            response_data = {
+                "success": False
+            }
+        
+        response = JSONResponse(content=response_data)
+        
+        print(f"DEBUG: Token verified successfully for {verification_data.email}")
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"ERROR: Exception type: {type(e).__name__}")
+
 
 @router.post("/login")
 async def login_user(login_data: UserLoginRequest, request: Request):
@@ -496,6 +720,49 @@ async def login_user(login_data: UserLoginRequest, request: Request):
                 }
             )
 
+        #Se l'utente non è verificato, metto in coda la mail di verifica e devo ritornare al front end l'errore
+        if user_record["isVerified"] == False:
+            token = Null
+
+            #Se il token per un qualche motivo non risulta creato precedentemente in fase di registrazione, lo creo ora
+            if not user_record["verification_token"]:
+                #Ottengo un nuovo token e lo salvo su database
+                token = get_verification_token()
+
+                update_data = {"verification_token": token}
+
+                #Lo salvo su database e refresho
+                result = (
+                            supabase_client
+                            .table("users")
+                            .update(update_data)
+                            .eq("email", user_record["email"])
+                            .execute()
+                        )
+
+                #Rifaccio il get per refreshare il token direttamente in user_result
+                user_record = supabase_client.table("users").select("*").eq("email", login_data.email).execute()
+
+
+            email_task = send_verification_email_task.apply_async(
+                kwargs={
+                    'email_data': {
+                        'to_email': login_data.email,
+                        'username': user_record.get("full_name") if user_record.get("full_name") else login_data.email,
+                        'verificationToken': user_record.get("verification_token"),
+                    }
+                },
+                queue="emails",
+                priority=6,
+                retry=True,
+                retry_policy={
+                    'max_retries': 3,
+                    'interval_start': 60,
+                    'interval_step': 60,
+                    'interval_max': 300
+                }
+            )
+
         print(f"DEBUG: Password verified, updating user")
         supabase_client.table("users").update({"updated_at": get_utc_now()}).eq("id", user_id).execute()
         
@@ -562,7 +829,7 @@ async def login_user(login_data: UserLoginRequest, request: Request):
 
 @router.post("/register")
 async def register_user(user_data: UserRegisterRequest, request: Request):
-    """Registrazione con cookie httpOnly HTTPS - CORRETTO"""
+    """Registrazione con cookie httpOnly HTTPS"""
     start_time = time.time()
     user_id = None
     
@@ -608,6 +875,10 @@ async def register_user(user_data: UserRegisterRequest, request: Request):
         current_time = get_utc_now()
         
         print(f"DEBUG: Creating user record for {user_data.email}")
+
+        #Creo il token che verrà poi utilizzato per verificare la mail
+        token = get_verification_token()
+
         new_user = {
             "id": user_id,
             "email": user_data.email,
@@ -618,7 +889,8 @@ async def register_user(user_data: UserRegisterRequest, request: Request):
             "avatar_url": None,
             "created_at": current_time,
             "updated_at": current_time,
-            "google_id": None
+            "google_id": None,
+            "verification_token": token
         }
         
         print(f"DEBUG: Inserting user into database")
@@ -631,9 +903,41 @@ async def register_user(user_data: UserRegisterRequest, request: Request):
                     "message": "Failed to create user account"
                 }
             )
-        
-        user_record = result.data[0]
+
+        user_record_response = supabase_client.table("users").select("*").eq("email", user_data.email).execute()
+
+        if not user_record_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "USER_NOT_FOUND",
+                    "message": "User not found after creation"
+                }
+            )
+
+        user_record = user_record_response.data[0]
+
         print(f"DEBUG: User created successfully: {user_record['id']}")
+        print(f"DEBUG: Passing TOKEN {token} to {user_data.email}")
+
+        email_task = send_verification_email_task.apply_async(
+                kwargs={
+                    'email_data': {
+                        'to_email': user_data.email,
+                        'username': user_record.get("full_name") if user_record.get("full_name") else user_data.email,
+                        'verificationToken': user_record.get("verification_token"),
+                    }
+                },
+                queue="emails",
+                priority=6,
+                retry=True,
+                retry_policy={
+                    'max_retries': 3,
+                    'interval_start': 60,
+                    'interval_step': 60,
+                    'interval_max': 300
+                }
+            )
         
         # Rimuovi password hash e serializza datetime
         user_record_clean = user_record.copy()

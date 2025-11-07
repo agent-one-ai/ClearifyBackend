@@ -686,6 +686,105 @@ def update_payment_analytics_task(self, analytics_data: Dict):
         logger.error(f"Error updating analytics: {str(e)}")
         raise self.retry(exc=e)
 
+@celery_app.task(bind=True, name="send_verification_email_task", acks_late=True)
+def send_verification_email_task(self, email_data: Dict):
+    """
+    Task per inviare email di verifica indirizzo
+    """
+    try:
+        to_email = email_data['to_email']
+        task_id = self.request.id
+        
+        logger.info(f"Starting verification email task {task_id} for {to_email}")
+        
+        self.update_state(
+            state="PROCESSING",
+            meta={
+                "status": "sending_email",
+                "progress": 20,
+                "message": "Preparing email content...",
+                "recipient": to_email
+            }
+        )
+
+        logger.info(f"================TOKEN======================")
+        logger.info(f"Token value {email_data['verificationToken']}")
+
+        required_fields = ['to_email', 'username', 'verificationToken']
+        for field in required_fields:
+            if not email_data.get(field):
+                raise ValueError(f"Missing required email field: {field}")
+
+        self.update_state(
+            state="PROCESSING", 
+            meta={
+                "status": "sending_email",
+                "progress": 50,
+                "message": "Sending email...",
+                "recipient": to_email
+            }
+        )
+
+        email_success = email_service.send_verification_email(email_data['to_email'], email_data['username'], email_data['verificationToken'])
+        
+        if not email_success:
+            raise ValueError("Email service returned failure status")
+
+        self.update_state(
+            state="SUCCESS",
+            meta={
+                "status": "completed",
+                "progress": 100,
+                "message": "Email sent successfully",
+                "recipient": to_email
+            }
+        )
+
+        logger.info(f"Confirmation email sent successfully to {to_email}")
+        
+        return {
+            'success': True,
+            'recipient': to_email,
+            'email_type': 'payment_confirmation',
+            'sent_at': datetime.now().isoformat(),
+            'task_id': task_id
+        }
+        
+    except Exception as e:
+        to_email = email_data.get('to_email', 'unknown')
+        logger.error(f"Failed to send confirmation email to {to_email}: {str(e)}")
+        
+        self.update_state(
+            state="FAILURE",
+            meta={
+                "status": "failed",
+                "progress": 0,
+                "error": str(e),
+                "message": "Email sending failed",
+                "recipient": to_email
+            }
+        )
+        
+        if self.request.retries < 3:
+            retry_countdown = 60 * (2 ** self.request.retries)
+            logger.info(f"Retrying email task in {retry_countdown} seconds (attempt {self.request.retries + 1}/3)")
+            
+            raise self.retry(
+                exc=e,
+                countdown=retry_countdown,
+                max_retries=3
+            )
+        
+        logger.critical(f"Email permanently failed for {to_email} after 3 retries")
+        
+        return {
+            'success': False,
+            'error': str(e),
+            'max_retries_reached': True,
+            'recipient': to_email,
+            'requires_manual_intervention': True
+        }
+
 @celery_app.task(bind=True, name="check_expiring_subscriptions_task", acks_late=True)
 def check_expiring_subscriptions_task(self):
     """Task per controllare subscription in scadenza"""

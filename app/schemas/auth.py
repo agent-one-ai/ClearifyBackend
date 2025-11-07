@@ -1,3 +1,4 @@
+from tokenize import String
 from typing import Optional
 from datetime import datetime
 from pydantic import BaseModel, EmailStr, validator
@@ -14,6 +15,7 @@ class UserResponse(BaseModel):
     credits_remaining: int = 100
     created_at: datetime
     updated_at: datetime
+    isVerified: bool = False
 
 class AuthResponse(BaseModel):
     user: UserResponse
@@ -23,6 +25,13 @@ class AuthResponse(BaseModel):
 
 class GoogleAuthUrlResponse(BaseModel):
     auth_url: str
+
+class VerificationTokenRequest(BaseModel):
+    email: EmailStr
+    token: str
+
+class VerificationEmailRequestRequest(BaseModel):
+    email: EmailStr
 
 class UserLoginRequest(BaseModel):
     email: EmailStr

@@ -8,7 +8,6 @@ from app.core.supabase_client import supabase_client
 from app.utils.humanizer import Humanizer
 
 logger = logging.getLogger(__name__)
-humanizer = Humanizer()
 # Mappa processing_type -> nome prompt DB
 PROCESSING_TYPE_TO_PROMPT_NAME = {
     "HUMANIZER": "humanizer",
@@ -174,9 +173,17 @@ class OpenAIService:
                 logger.info("=== TEXT PROCESSING SUCCESS ===")
                 # Gabbo, con la classe humanizer, provo ad individuare dei pattern tipici AI e li sostituisco
                 if processing_type == "humanizer":
+                    logger.info(f"=== TESTO: {text} ===")
                     logger.info("=== UMANIZZO ===")
-                    processed_text = humanizer.humanize(processed_text)
-                
+
+                    #TODO: Inizializzo l'humanizer con la lingua del testo passato in input, per ora passo sempre inglese
+                    logger.info(f"=== TESTO: {text} ===")
+                    humanizer = Humanizer(language='en')
+                    
+                    result = humanizer.humanize(text, intensity=0.4)
+                    processed_text = result['humanized']
+
+                    logger.info("=== FINE UMANIZZAZIONE ===")                
                 # Ritorno il testo processato
                 return processed_text
 

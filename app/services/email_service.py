@@ -415,6 +415,44 @@ class EmailService:
         
         return subject, html_body, text_body
 
+    def send_verification_email(
+        self,
+        to_email: str,
+        username: str,
+        verificationToken: str
+    ) -> bool:
+        """
+        Metodo del servizio per inviare email per confermare l'esistenza dell'indirizzo
+        """
+        try:
+            #Creol'URL completo per la verifica dell'email
+            verification_url = f"https://localhost:3000/verifyEmail?token={verificationToken}"
+
+            base_url = "https://localhost:3000" 
+
+            context = {
+                'user_name': username,
+                'verification_url': verification_url,
+                'base_url': base_url
+            }
+            
+            subject, html_body, text_body = self.render_template_and_subject("verify_email", context)
+            
+            return self.send_email_sync(
+                to_email=to_email,
+                subject=subject,
+                html_body=html_body,
+                text_body=text_body,
+                email_type="verify_email",
+                metadata={
+                    'user_name': username
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in send_verification_email: {str(e)}")
+            return False
+
     def send_subscription_expiring_email(
         self,
         to_email: str,
@@ -675,7 +713,6 @@ class EmailService:
         
         return template
 
-    # 🔥 FUNZIONI UTILITY AGGIORNATE con template da database
 def send_payment_confirmation_email(
     to_email: str,
     plan_type: str,
@@ -684,7 +721,7 @@ def send_payment_confirmation_email(
     customer_name: str = ""
 ) -> bool:
     """
-    Funzione di utilità per inviare email di conferma pagamento con template da database
+    Funzione per inviare email di conferma pagamento con template da database
     """
     try:
         email_service = EmailService()
