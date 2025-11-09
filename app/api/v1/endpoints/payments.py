@@ -115,11 +115,10 @@ async def payment_success(request: PaymentSuccessRequest, background_tasks: Back
             queue="payments"
         )
 
-        logger.info(task)
-        
         return JSONResponse({
             "success": True,
-            "message": "Payment is being processed"
+            "message": "Payment is being processed",
+            "task_id": task_id
         })
         
     except Exception as e:
@@ -185,34 +184,32 @@ async def get_plans():
         "plans": StripeConfig.PLANS
     })
 
-@router.get("/task-status/{task_id}")
-async def get_task_status(task_id: str):
-    """
-    Endpoint per controllare lo stato di un task Celery
-    """
-    try:
-        from celery_app import celery_app
-        
-        task_result = celery_app.AsyncResult(task_id)
-        
-        if task_result.state == 'PENDING':
-            response = {
-                'state': task_result.state,
-                'status': 'Task is waiting to be processed'
-            }
-        elif task_result.state == 'SUCCESS':
-            response = {
-                'state': task_result.state,
-                'result': task_result.result
-            }
-        else:  # FAILURE
-            response = {
-                'state': task_result.state,
-                'error': str(task_result.info)
-            }
-        
-        return JSONResponse(response)
-        
-    except Exception as e:
-        logger.error(f"Error checking task status: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error checking task status")
+@router.get("/payment-status/{task_id}")
+async def get_payment_status(task_id: str):
+    """Controlla lo stato di un task di pagamento"""
+    from celery.result import AsyncResult
+    from app.core.celery_app import celery_app 
+
+    task_result = celery_app.AsyncResult(task_id)
+
+    if task_result.ready():
+        # Task completato
+        if task_result.successful():
+            return JSONResponse({
+                "status": "completed",
+                "success": True,
+                "result": task_result.result
+            })
+        else:
+            # Task fallito
+            return JSONResponse({
+                "status": "failed",
+                "success": False,
+                "error": str(task_result.info)
+            })
+    else:
+        # Task ancora in esecuzione
+        return JSONResponse({
+            "status": "processing",
+            "success": None
+        })    

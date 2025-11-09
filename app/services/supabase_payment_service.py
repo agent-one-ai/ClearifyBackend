@@ -144,7 +144,7 @@ class SupabasePaymentService:
                 subscription_data["user_id"] = str(user_id)
             
             # Se esiste una subscription attiva
-            if existing_response:
+            if existing_response.data:
                 existing_sub = existing_response.data[0]
                 logger.info(f"User Exists")
                 if existing_sub["plan_type"] != plan_type:

@@ -348,7 +348,7 @@ def process_payment_success_task(self, payment_data: Dict) -> Dict:
         }
 
     except Exception as e:
-        logger.error(f"Error processing payment success: {str(e)}")
+        logger.error(f"Error Main methods processing payment success: {str(e)}")
 
         if customer_email:
             send_payment_failed_notification_task.apply_async(
@@ -366,22 +366,32 @@ def process_payment_success_task(self, payment_data: Dict) -> Dict:
             )
 
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(
-                    payment_service.update_payment_intent_status(
-                        stripe_payment_intent_id=payment_intent_id,
-                        status='processing_failed',
-                        processing_status='failed',
-                        failed_at=datetime.now()
-                    )
-                )
-            finally:
-                loop.close()
+            intent_id = payment_data.get('payment_intent_id')
+            
+            if intent_id:
+                payment_intent = stripe.PaymentIntent.retrieve(intent_id)
+                if payment_intent.status != 'succeeded':
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        loop.run_until_complete(
+                            payment_service.update_payment_intent_status(
+                                stripe_payment_intent_id=payment_intent_id,
+                                status='processing_failed',
+                                processing_status='failed'
+                            )
+                        )
+                    finally:
+                        loop.close()
+
+            return {
+                'success': False,
+                'message': 'Payment not processed'
+            }
+
         except Exception as db_error:
             logger.error(f"Failed to update payment status: {str(db_error)}")
-
+        
         raise e
 
 @celery_app.task(bind=True, name="send_confirmation_email_task", acks_late=True)
