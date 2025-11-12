@@ -3,3 +3,6 @@
 *.pyc
 certs/
 celerybeat-schedule
+static/images/.DS_Store
+celerybeat-schedule
+celerybeat-schedule
