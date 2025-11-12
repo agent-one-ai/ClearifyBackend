@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any
 import logging
 import time
 import uuid
+import httpx
 from datetime import datetime, timezone
 
 from app.core.config import settings
@@ -71,12 +72,12 @@ async def create_support_ticket(
     ticket_request: SupportTicketRequest,
     request: Request
 ):
-    """Crea un nuovo ticket di supporto e invia email di conferma"""
+    """Chiamo automazione n8n per l'integrazione su Linear"""
     start_time = time.time()
     ticket_id = None
     
     try:
-        logger.info(f"Creating support ticket for {ticket_request.email}")
+        logger.info(f"Creating support ticket for {ticket_request.customer_email}")
         
         # Genera ID univoco per il ticket
         ticket_id = f"TK-{str(uuid.uuid4())[:8].upper()}"
@@ -84,142 +85,98 @@ async def create_support_ticket(
         
         # Prepara i dati per il database
         ticket_data = {
-            'ticket_id': ticket_id,
-            'name': ticket_request.name,
-            'email': ticket_request.email,
+            'action': ticket_request.action,
+            'team': ticket_request.team,
+            'customer_email': ticket_request.customer_email,
             'category': ticket_request.category,
             'priority': ticket_request.priority,
-            'subject': ticket_request.subject,
-            'message': ticket_request.message,
-            'attach_screenshot': ticket_request.attachScreenshot,
-            'user_agent': ticket_request.userAgent,
-            'user_id': ticket_request.userId,
-            'user_info': ticket_request.userInfo.dict() if ticket_request.userInfo else None,
-            'status': 'open',
-            'created_at': current_time,
-            'updated_at': current_time
+            'title': ticket_request.title,
+            'description': ticket_request.description,
+            'original_message': ticket_request.original_message,
+            'needScreenshots': ticket_request.needScreenshots,
+            'labels': ticket_request.labels
         }
         
         # Salva nel database
-        logger.info(f"Saving ticket {ticket_id} to database")
-        result = supabase_client.table('support_tickets').insert(ticket_data).execute()
+        #logger.info(f"Saving ticket {ticket_id} to database")
+        #result = supabase_client.table('support_tickets').insert(ticket_data).execute()
         
-        if not result.data:
-            raise Exception("Failed to create support ticket in database")
+        #if not result.data:
+        #    raise Exception("Failed to create support ticket in database")
         
-        logger.info(f"Ticket {ticket_id} saved successfully")
+        #logger.info(f"Ticket {ticket_id} saved successfully")
         
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://agentonesrl.app.n8n.cloud/webhook/issue",
+                json=ticket_data,
+                timeout=10.0
+            )
+        
+        if response.status_code >= 400:
+            logger.warning(f"n8n responded with {response.status_code}: {response.text}")
+        else:
+            logger.info("Successfully sent ticket to n8n webhook")
+
         # Prepara il contesto per l'email di conferma
         priority_colors = get_priority_colors(ticket_request.priority)
         expected_response = get_expected_response_time(ticket_request.priority)
         
-        email_context = {
-            'customer_name': ticket_request.name,
-            'ticket_id': ticket_id,
-            'subject': ticket_request.subject,
-            'category': format_category(ticket_request.category),
-            'priority': ticket_request.priority.title(),
-            'priority_bg_color': priority_colors['bg'],
-            'priority_text_color': priority_colors['text'],
-            'submission_date': datetime.now().strftime("%B %d, %Y at %H:%M UTC"),
-            'support_url': f"{settings.FRONTEND_URL}/support",
-            'base_url': getattr(settings, 'BASE_URL', 'https://clearify.com')
-        }
+        #email_context = {
+        #    'customer_name': ticket_request.name,
+        #    'ticket_id': ticket_id,
+        #    'subject': ticket_request.subject,
+        #    'category': format_category(ticket_request.category),
+        #    'priority': ticket_request.priority.title(),
+        #    'priority_bg_color': priority_colors['bg'],
+        #    'priority_text_color': priority_colors['text'],
+        #    'submission_date': datetime.now().strftime("%B %d, %Y at %H:%M UTC"),
+        #    'support_url': f"{settings.FRONTEND_URL}/support",
+        #    'base_url': getattr(settings, 'BASE_URL', 'https://clearify.com')
+        #}
         
         # Invia email di conferma all'utente
-        try:
-            logger.info(f"Sending confirmation email to {ticket_request.email}")
+        #try:
+        #    logger.info(f"Sending confirmation email to {ticket_request.email}")
+        #    
+        #    subject, html_body, text_body = email_service.render_template_and_subject(
+        #        "support_received", 
+        #        email_context
+        #    )
             
-            subject, html_body, text_body = email_service.render_template_and_subject(
-                "support_received", 
-                email_context
-            )
+        #    email_success = email_service.send_email_sync(
+        #        to_email=ticket_request.email,
+        #        subject=subject,
+        #        html_body=html_body,
+        #        text_body=text_body,
+        #        email_type="support_confirmation",
+        #        metadata={
+        #            'ticket_id': ticket_id,
+        #            'category': ticket_request.category,
+        #            'priority': ticket_request.priority
+        #        }
+        #    )
             
-            email_success = email_service.send_email_sync(
-                to_email=ticket_request.email,
-                subject=subject,
-                html_body=html_body,
-                text_body=text_body,
-                email_type="support_confirmation",
-                metadata={
-                    'ticket_id': ticket_id,
-                    'category': ticket_request.category,
-                    'priority': ticket_request.priority
-                }
-            )
-            
-            if email_success:
-                logger.info(f"Confirmation email sent successfully to {ticket_request.email}")
-            else:
-                logger.warning(f"Failed to send confirmation email to {ticket_request.email}")
+        #    if email_success:
+        #        logger.info(f"Confirmation email sent successfully to {ticket_request.email}")
+        #    else:
+        #        logger.warning(f"Failed to send confirmation email to {ticket_request.email}")
                 
-        except Exception as email_error:
-            logger.error(f"Error sending confirmation email: {str(email_error)}")
-            # Non far fallire il ticket per errore email
+        #except Exception as email_error:
+        #    logger.error(f"Error sending confirmation email: {str(email_error)}")
+        #    # Non far fallire il ticket per errore email
         
-        # Invia notifica email interna al team di supporto
-        try:
-            logger.info("Sending internal notification to support team")
-            
-            internal_context = {
-                'ticket_id': ticket_id,
-                'customer_name': ticket_request.name,
-                'customer_email': ticket_request.email,
-                'subject': ticket_request.subject,
-                'category': format_category(ticket_request.category),
-                'priority': ticket_request.priority.title(),
-                'message': ticket_request.message,
-                'user_info': ticket_request.userInfo.dict() if ticket_request.userInfo else {},
-                'user_agent': ticket_request.userAgent,
-                'submission_date': datetime.now().strftime("%B %d, %Y at %H:%M UTC"),
-                'admin_url': f"{settings.BASE_URL}/admin/tickets/{ticket_id}"
-            }
-            
-            # Invia a email di supporto interna
-            support_email = getattr(settings, 'SUPPORT_EMAIL', 'clearifysuppor@gmail.com')
-            
-            internal_subject, internal_html, internal_text = email_service.render_template_and_subject(
-                "support_internal_notification",
-                internal_context
-            )
-            
-            email_service.send_email_sync(
-                to_email=support_email,
-                subject=internal_subject,
-                html_body=internal_html,
-                text_body=internal_text,
-                email_type="support_internal",
-                metadata={
-                    'ticket_id': ticket_id,
-                    'customer_email': ticket_request.email
-                }
-            )
-            
-        except Exception as internal_email_error:
-            logger.error(f"Error sending internal notification: {str(internal_email_error)}")
-            # Non far fallire il ticket per errore email interna
-        
-        logger.info(f"Support ticket {ticket_id} created successfully")
         
         return SupportTicketResponse(
-            success=True,
-            message="Support ticket created successfully",
-            ticket_id=ticket_id,
-            expected_response_time=expected_response
+            success=response.json().get("success"),
+            message=response.json().get("message"),
+            value=response.json().get("value")
         )
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error creating support ticket: {str(e)}")
-        
-        process_time = (time.time() - start_time) * 1000
-        await api_logger.log_api_call(
-            request=request,
-            response_time=process_time,
-            user_id=ticket_request.userId if 'ticket_request' in locals() else None,
-            error=str(e)
-        )
         
         raise HTTPException(
             status_code=500, 

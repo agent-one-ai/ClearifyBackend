@@ -8,8 +8,8 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.schemas.text_schemas import (
-    TextProcessingRequest, 
-    TextProcessingResponse, 
+    TextProcessingRequest,
+    TextProcessingResponse,
     TaskStatusResponse,
     TaskStatus,
     ProcessedTextResult
@@ -18,6 +18,8 @@ from app.workers.tasks import process_text_task
 from app.core.celery_app import celery_app
 from app.services.openai_service import openai_service
 from app.core.config import settings
+from app.core.auth import get_authenticated_user_with_credits
+from app.core.supabase_client import supabase_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -154,9 +156,23 @@ def estimate_tokens(text: str) -> int:
     # Stima: 1 token ≈ 0.75 parole in inglese, un po' più in italiano
     words = len(text.split())
     estimated_tokens = int(words * 1.3)  # Moltiplicatore conservativo
-    
+
     # Token minimi e massimi ragionevoli
     return max(50, min(estimated_tokens, 4000))
+
+def count_words(text: str) -> int:
+    """
+    Conta il numero di parole nel testo
+    Rimuove spazi multipli e conta solo parole valide
+    """
+    if not text or not text.strip():
+        return 0
+
+    # Rimuovi spazi multipli e split
+    words = text.strip().split()
+
+    # Conta solo parole non vuote
+    return len([word for word in words if word.strip()])
 
 # ================================
 # RATE LIMITING SICURO
@@ -192,22 +208,87 @@ async def process_text(
     request: TextProcessingRequest,
     fastapi_request: Request,
     background_tasks: BackgroundTasks,
-    #user_id = str #Depends(get_current_user),  # Add auth later
+    user: dict = Depends(get_authenticated_user_with_credits)  # ✅ AUTENTICAZIONE ABILITATA
 ):
     """
-    Start text processing task with OpenAI rate limiting
+    Start text processing task with JWT authentication and subscription verification
+
+    Requires:
+    - Valid JWT token (httpOnly cookie)
+    - Verified email address
+    - Available credits (for free tier users)
     """
     try:
-        # Applica rate limiting in modo sicuro
-        await apply_rate_limit_safe(fastapi_request, "30/minute")
+        user_id = user.get("id")
+        user_email = user.get("email")
+        subscription_tier = user.get("subscription_tier", "free")
+        credits_remaining = user.get("credits_remaining", 0)
+
+        # ✅ CONTA PAROLE NEL TESTO
+        word_count = count_words(request.text)
+        logger.info(f"Word count for request: {word_count} words")
+
+        # ✅ RATE LIMITING DIFFERENZIATO PER TIER
+        if subscription_tier == "free":
+            # Free: 30 req/hour, max 200 parole per richiesta
+            await apply_rate_limit_safe(fastapi_request, "30/hour")
+            max_words_per_request = 200
+            max_text_length = 10000  # Mantieni anche limite caratteri per sicurezza
+        else:
+            # Premium: 500 req/hour, max 1000 parole per richiesta
+            await apply_rate_limit_safe(fastapi_request, "500/hour")
+            max_words_per_request = 1000
+            max_text_length = 50000
+
+        # ✅ VERIFICA LIMITE PAROLE PER TIER
+        if word_count > max_words_per_request:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "TEXT_TOO_LONG",
+                    "message": f"Text exceeds maximum word limit for {subscription_tier} tier",
+                    "max_words": max_words_per_request,
+                    "current_words": word_count,
+                    "subscription_tier": subscription_tier
+                }
+            )
+
+        # Verifica lunghezza caratteri per tier (sicurezza aggiuntiva)
+        if len(request.text) > max_text_length:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "TEXT_TOO_LONG",
+                    "message": f"Text exceeds maximum character length for {subscription_tier} tier",
+                    "max_length": max_text_length,
+                    "current_length": len(request.text),
+                    "subscription_tier": subscription_tier
+                }
+            )
+
+        # ✅ VERIFICA CREDITI SUFFICIENTI PER FREE USERS (word-based)
+        if subscription_tier == "free":
+            if credits_remaining < word_count:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "INSUFFICIENT_CREDITS",
+                        "message": f"Insufficient credits. You need {word_count} words but only have {credits_remaining} remaining.",
+                        "words_needed": word_count,
+                        "words_available": credits_remaining,
+                        "subscription_tier": subscription_tier
+                    }
+                )
+
+        # Rate limiting globale OpenAI
         await apply_rate_limit_safe(fastapi_request, "200/minute", key_func=get_global_key)
-        
+
         # Stima token prima del controllo quota
         estimated_tokens = estimate_tokens(request.text)
-        
+
         # Controlla quota OpenAI prima di procedere
         can_proceed, quota_info = await check_openai_quota()
-        
+
         if not can_proceed:
             logger.warning(f"OpenAI quota exceeded: {quota_info}")
             raise HTTPException(
@@ -220,33 +301,41 @@ async def process_text(
                     "type": "openai_quota_exceeded"
                 }
             )
-        
+
         # Generate task ID
         task_id = str(uuid.uuid4())
-        
+
         # Traccia l'utilizzo prima della chiamata
         await track_openai_usage(estimated_tokens)
-        
+
         # Get text analysis for estimated completion time
         try:
             analysis = await openai_service.get_text_analysis(request.text)
         except Exception as openai_error:
             logger.error(f"OpenAI service error: {openai_error}")
-            # Fallback se OpenAI non è disponibile
             analysis = {
-                "estimated_processing_time": 30,  # Default fallback
+                "estimated_processing_time": 30,
                 "complexity": "medium"
             }
-        
+
         estimated_completion = datetime.utcnow().replace(microsecond=0) + \
                              timedelta(seconds=analysis["estimated_processing_time"])
-        
+
+        # ✅ DECREMENTA CREDITI PER FREE USERS (word-based)
+        if subscription_tier == "free" and credits_remaining >= word_count:
+            new_credits = credits_remaining - word_count
+            supabase_client.table("users").update({
+                "credits_remaining": new_credits
+            }).eq("id", user_id).execute()
+
+            logger.info(f"Credits decremented for user {user_email}: {credits_remaining} -> {new_credits} ({word_count} words processed)")
+
         # Start Celery task con retry policy
         task = process_text_task.apply_async(
             args=[
                 request.text,
                 request.processing_type.value,
-                request.user_id, #"anonymous",  # Replace with current_user.id when auth is added
+                user_id,  # ✅ Usa user_id autenticato invece di request.user_id
                 request.options
             ],
             task_id=task_id,
@@ -258,23 +347,26 @@ async def process_text(
                 'interval_max': 60,
             }
         )
-        
+
         # Log metrics per monitoring
-        #user_id = get_user_id_or_ip_safe(fastapi_request)
+        credits_after = credits_remaining - word_count if subscription_tier == "free" else "unlimited"
         logger.info(
-            f"Text processing started - Task: {task_id}, "
-            f"User: {request.user_id}, Text length: {len(request.text)}, "
+            f"✅ Text processing started - Task: {task_id}, "
+            f"User: {user_email} ({subscription_tier}), "
+            f"Word count: {word_count}, "
+            f"Text length: {len(request.text)} chars, "
             f"Est. tokens: {estimated_tokens}, "
+            f"Credits remaining: {credits_after}, "
             f"OpenAI usage: {quota_info.get('rpm_usage_percent', 0):.1f}% RPM"
         )
-        
+
         return TextProcessingResponse(
             task_id=task_id,
             status=TaskStatus.PENDING,
             message=f"Text processing started. Estimated completion in {analysis['estimated_processing_time']} seconds.",
             estimated_completion=estimated_completion
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -286,11 +378,13 @@ async def process_text(
 
 @router.get("/task/{task_id}", response_model=TaskStatusResponse)
 async def get_task_status(
-    task_id: str, 
-    fastapi_request: Request
+    task_id: str,
+    fastapi_request: Request,
+    user: dict = Depends(get_authenticated_user_with_credits)  # ✅ AUTENTICAZIONE ABILITATA
 ):
     """
     Get status of a text processing task
+    Requires authentication
     """
     try:
         # Rate limiting più permissivo per status check
@@ -349,11 +443,13 @@ async def get_task_status(
 
 @router.get("/task/{task_id}/result", response_model=ProcessedTextResult)
 async def get_task_result(
-    task_id: str, 
-    fastapi_request: Request
+    task_id: str,
+    fastapi_request: Request,
+    user: dict = Depends(get_authenticated_user_with_credits)  # ✅ AUTENTICAZIONE ABILITATA
 ):
     """
     Get detailed result of a completed text processing task
+    Requires authentication
     """
     try:
         await apply_rate_limit_safe(fastapi_request, "60/minute")
@@ -386,11 +482,13 @@ async def get_task_result(
 
 @router.delete("/task/{task_id}")
 async def cancel_task(
-    task_id: str, 
-    fastapi_request: Request
+    task_id: str,
+    fastapi_request: Request,
+    user: dict = Depends(get_authenticated_user_with_credits)  # ✅ AUTENTICAZIONE ABILITATA
 ):
     """
     Cancel a pending or running task
+    Requires authentication
     """
     try:
         await apply_rate_limit_safe(fastapi_request, "20/minute")

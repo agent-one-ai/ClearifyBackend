@@ -5,7 +5,8 @@ from typing import Dict, Any, Optional
 from openai import AsyncOpenAI, APIError, RateLimitError
 from app.core.config import settings
 from app.core.supabase_client import supabase_client
-from app.utils.humanizer import Humanizer
+from fastapi import HTTPException
+import httpx
 
 logger = logging.getLogger(__name__)
 # Mappa processing_type -> nome prompt DB
@@ -93,6 +94,13 @@ class OpenAIService:
         logger.info("=== TEXT PROCESSING START ===")
         logger.info("Processing type: %s | Text length: %d chars", processing_type, len(text))
 
+        # Se processing_type è humanizer, salta OpenAI e vai direttamente all'umanizzazione
+        if processing_type.upper() == "HUMANIZER":
+            logger.info("=== HUMANIZER MODE: Skipping OpenAI, going directly to humanization ===")
+            result = await humanize_text(text, 'medium')
+            logger.info("=== TEXT PROCESSING SUCCESS (HUMANIZER) ===")
+            return result
+
         # 1) System instructions (agent_prompt)
         logger.debug("Loading agent_prompt...")
         agent_instructions = await self._get_prompt("agent_prompt")
@@ -137,8 +145,6 @@ class OpenAIService:
                 if key in options:
                     prompt += f"\n{key.replace('_',' ').title()}: {options[key]}"
 
-        logger.info("Final USER prompt:\n%s", prompt)
-
         # 5) Chiamata OpenAI con retry
         client = AsyncOpenAI(api_key=settings.openai_api_key)
 
@@ -171,19 +177,7 @@ class OpenAIService:
                     processed_text = processed_text[start_idx:end_idx].strip()
 
                 logger.info("=== TEXT PROCESSING SUCCESS ===")
-                # Gabbo, con la classe humanizer, provo ad individuare dei pattern tipici AI e li sostituisco
-                if processing_type == "humanizer":
-                    logger.info(f"=== TESTO: {text} ===")
-                    logger.info("=== UMANIZZO ===")
 
-                    #TODO: Inizializzo l'humanizer con la lingua del testo passato in input, per ora passo sempre inglese
-                    logger.info(f"=== TESTO: {text} ===")
-                    humanizer = Humanizer(language='en')
-                    
-                    result = humanizer.humanize(text, intensity=0.4)
-                    processed_text = result['humanized']
-
-                    logger.info("=== FINE UMANIZZAZIONE ===")                
                 # Ritorno il testo processato
                 return processed_text
 
@@ -227,6 +221,58 @@ class OpenAIService:
             "sentence_count": sentence_count,
             "estimated_processing_time": max(2, word_count // 100),
         }
+
+async def humanize_text(text: str, intensity: str):
+    try:
+        logger.info(f"=== STARTING HUMANIZE_TEXT ===")
+        logger.info(f"Text length: {len(text)} chars, Intensity: {intensity}")
+
+        # Preparo il JSON per n8n
+        humanize_data = {
+            'text': text,
+            'intensity': intensity
+        }
+
+        logger.info("Sending POST request to n8n webhook...")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://agentonesrl.app.n8n.cloud/webhook/humanize",
+                json=humanize_data
+            )
+
+        logger.info(f"=== n8n response received - Status: {response.status_code} ===")
+        logger.info(f"=== TESTO DA N8N: {response.json()} ===")
+
+        if response.status_code >= 400:
+            logger.warning(f"n8n responded with {response.status_code}")
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"n8n webhook failed with status {response.status_code}"
+            )
+
+        logger.info("Successfully received humanized text from n8n webhook")
+        humanized_result = response.json().get("humanizedText")
+
+        if not humanized_result:
+            logger.error("n8n response missing 'humanizedText' field")
+            raise HTTPException(
+                status_code=500,
+                detail="Invalid response from humanization service"
+            )
+
+        logger.info(f"Humanized text length: {len(humanized_result)} chars")
+        return humanized_result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating humanized text: {str(e)}")
+        
+        raise HTTPException(
+            status_code=500, 
+            detail="Failed to humanize text. Please try again later."
+        )
+
 
 # Global service instance
 openai_service = OpenAIService()

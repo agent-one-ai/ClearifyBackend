@@ -1,4 +1,4 @@
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from datetime import datetime
 from pydantic import BaseModel, EmailStr, validator
 
@@ -8,24 +8,21 @@ class UserInfo(BaseModel):
     created_at: Optional[str] = None
 
 class SupportTicketRequest(BaseModel):
-    name: str
-    email: EmailStr
-    category: str  # general, technical, billing, feature
-    priority: str  # low, medium, high, urgent
-    subject: str
-    message: str
-    attachScreenshot: bool = False
-    userAgent: str
-    timestamp: str
-    userId: Optional[str] = None
-    userInfo: Optional[UserInfo] = None
+    action: str
+    team: str
+    customer_email: str
+    category: str
+    priority: str
+    title: str
+    description: str
+    original_message: str
+    needScreenshots: bool
+    labels: List[str]
 
 class SupportTicketResponse(BaseModel):
     success: bool
     message: str
-    ticket_id: str
-    expected_response_time: str
-
+    value: str
 
 
 
