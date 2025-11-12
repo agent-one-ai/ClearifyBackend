@@ -18,7 +18,7 @@ from app.workers.tasks import process_text_task
 from app.core.celery_app import celery_app
 from app.services.openai_service import openai_service
 from app.core.config import settings
-from app.core.auth import get_authenticated_user_with_credits
+from app.core.auth import get_authenticated_user_with_credits, verify_email_verified
 from app.core.supabase_client import supabase_client
 
 logger = logging.getLogger(__name__)
@@ -266,16 +266,15 @@ async def process_text(
                 }
             )
 
-        # ✅ VERIFICA CREDITI SUFFICIENTI PER FREE USERS (word-based)
+        # ✅ VERIFICA CREDITI SUFFICIENTI PER FREE USERS (1 credito per processo)
         if subscription_tier == "free":
-            if credits_remaining < word_count:
+            if credits_remaining < 1:
                 raise HTTPException(
                     status_code=403,
                     detail={
                         "code": "INSUFFICIENT_CREDITS",
-                        "message": f"Insufficient credits. You need {word_count} words but only have {credits_remaining} remaining.",
-                        "words_needed": word_count,
-                        "words_available": credits_remaining,
+                        "message": f"Insufficient credits. You need at least 1 credit to process text.",
+                        "credits_remaining": credits_remaining,
                         "subscription_tier": subscription_tier
                     }
                 )
@@ -321,14 +320,14 @@ async def process_text(
         estimated_completion = datetime.utcnow().replace(microsecond=0) + \
                              timedelta(seconds=analysis["estimated_processing_time"])
 
-        # ✅ DECREMENTA CREDITI PER FREE USERS (word-based)
-        if subscription_tier == "free" and credits_remaining >= word_count:
-            new_credits = credits_remaining - word_count
+        # ✅ DECREMENTA CREDITI PER FREE USERS (1 credito per processo)
+        if subscription_tier == "free" and credits_remaining >= 1:
+            new_credits = credits_remaining - 1
             supabase_client.table("users").update({
                 "credits_remaining": new_credits
             }).eq("id", user_id).execute()
 
-            logger.info(f"Credits decremented for user {user_email}: {credits_remaining} -> {new_credits} ({word_count} words processed)")
+            logger.info(f"Credits decremented for user {user_email}: {credits_remaining} -> {new_credits} (1 credit for process, {word_count} words)")
 
         # Start Celery task con retry policy
         task = process_text_task.apply_async(
@@ -349,7 +348,7 @@ async def process_text(
         )
 
         # Log metrics per monitoring
-        credits_after = credits_remaining - word_count if subscription_tier == "free" else "unlimited"
+        credits_after = credits_remaining - 1 if subscription_tier == "free" else "unlimited"
         logger.info(
             f"✅ Text processing started - Task: {task_id}, "
             f"User: {user_email} ({subscription_tier}), "
@@ -380,11 +379,11 @@ async def process_text(
 async def get_task_status(
     task_id: str,
     fastapi_request: Request,
-    user: dict = Depends(get_authenticated_user_with_credits)  # ✅ AUTENTICAZIONE ABILITATA
+    user: dict = Depends(verify_email_verified)  # ✅ Solo email verificata (non serve check crediti)
 ):
     """
     Get status of a text processing task
-    Requires authentication
+    Requires authentication (no credit check needed - task already created)
     """
     try:
         # Rate limiting più permissivo per status check
@@ -445,11 +444,11 @@ async def get_task_status(
 async def get_task_result(
     task_id: str,
     fastapi_request: Request,
-    user: dict = Depends(get_authenticated_user_with_credits)  # ✅ AUTENTICAZIONE ABILITATA
+    user: dict = Depends(verify_email_verified)  # ✅ Solo email verificata (non serve check crediti)
 ):
     """
     Get detailed result of a completed text processing task
-    Requires authentication
+    Requires authentication (no credit check needed - task already created)
     """
     try:
         await apply_rate_limit_safe(fastapi_request, "60/minute")
