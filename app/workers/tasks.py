@@ -67,7 +67,7 @@ def process_text_task(self, text: str, processing_type: str, user_id: str, optio
             'text_length': len(str(text)),
             'text_word_count': len(text.split()),
             'status': 'processing',
-            'created_at': datetime.now().isoformat(),
+            'created_at': datetime.utcnow().isoformat(),
             'is_ai_generated': True,
             'confidence_score': 100
         }        
@@ -195,7 +195,7 @@ def create_payment_intent_task(self, payment_data: Dict) -> Dict:
                 **payment_data.get('metadata', {}),
                 'customer_email': payment_data['customer_email'],
                 'plan_type': payment_data['plan_type'],
-                'created_at': datetime.now().isoformat(),
+                'created_at': datetime.utcnow().isoformat(),
                 'celery_task_id': self.request.id,
             },
             receipt_email=payment_data['customer_email'],
@@ -275,7 +275,7 @@ def process_payment_success_task(self, payment_data: Dict) -> Dict:
                     stripe_payment_intent_id=payment_intent_id,
                     status='succeeded' if payment_intent_id else 'paid',
                     processing_status='completed',
-                    completed_at=datetime.now()
+                    completed_at=datetime.utcnow()
                 )
             )
 
@@ -291,7 +291,7 @@ def process_payment_success_task(self, payment_data: Dict) -> Dict:
                     metadata={
                         'payment_method': 'stripe',
                         'processed_by_task': self.request.id,
-                        'processed_at': datetime.now().isoformat()
+                        'processed_at': datetime.utcnow().isoformat()
                     }
                 )
             )
@@ -308,7 +308,7 @@ def process_payment_success_task(self, payment_data: Dict) -> Dict:
                     'amount': payment_data.get('amount'),
                     'payment_intent_id': payment_intent_id or 'INVOICE',
                     'subscription_id': subscription_result.get('id'),
-                    'payment_date': datetime.now().strftime("%d/%m/%Y alle %H:%M")
+                    'payment_date': datetime.utcnow().strftime("%d/%m/%Y alle %H:%M UTC")
                 }
             },
             queue="emails",
@@ -325,7 +325,7 @@ def process_payment_success_task(self, payment_data: Dict) -> Dict:
         update_payment_analytics_task.apply_async(
             kwargs={
                 'analytics_data': {
-                    'date': datetime.now().date().isoformat(),
+                    'date': datetime.utcnow().date().isoformat(),
                     'success': True,
                     'amount': payment_data.get('amount', 0) / 100,
                     'plan_type': payment_data.get('plan_type'),
@@ -358,7 +358,7 @@ def process_payment_success_task(self, payment_data: Dict) -> Dict:
                         'plan_type': payment_data.get('plan_type', ''),
                         'payment_intent_id': payment_intent_id,
                         'error_message': str(e),
-                        'failed_at': datetime.now().isoformat()
+                        'failed_at': datetime.utcnow().isoformat()
                     }
                 },
                 queue="emails",
@@ -435,7 +435,7 @@ def send_confirmation_email_task(self, email_data: Dict):
             'customer_name': email_data.get('customer_name', customer_email.split('@')[0]),
             'plan_type': email_data['plan_type'],
             'amount': email_data['amount'],
-            'payment_date': email_data.get('payment_date', datetime.now().strftime("%d/%m/%Y alle %H:%M")),
+            'payment_date': email_data.get('payment_date', datetime.utcnow().strftime("%d/%m/%Y alle %H:%M UTC")),
             'payment_intent_id': email_data.get('payment_intent_id', 'N/A'),
         }
         
@@ -476,7 +476,7 @@ def send_confirmation_email_task(self, email_data: Dict):
             'success': True,
             'recipient': customer_email,
             'email_type': 'payment_confirmation',
-            'sent_at': datetime.now().isoformat(),
+            'sent_at': datetime.utcnow().isoformat(),
             'task_id': task_id
         }
         
@@ -536,7 +536,7 @@ def send_payment_failed_notification_task(self, failure_data: Dict):
         return {
             'success': success,
             'recipient': customer_email,
-            'sent_at': datetime.now().isoformat() if success else None
+            'sent_at': datetime.utcnow().isoformat() if success else None
         }
         
     except Exception as e:
@@ -564,7 +564,7 @@ def send_expiring_subscription_notification_task(self, notification_data: Dict):
         return {
             'success': success,
             'recipient': customer_email,
-            'sent_at': datetime.now().isoformat() if success else None
+            'sent_at': datetime.utcnow().isoformat() if success else None
         }
         
     except Exception as e:
@@ -626,7 +626,7 @@ def handle_webhook_event_task(self, event_data: Dict):
                             'plan_type': payment_intent.get('metadata', {}).get('plan_type', ''),
                             'payment_intent_id': payment_intent.get('id'),
                             'error_message': payment_intent.get('last_payment_error', {}).get('message', ''),
-                            'failed_at': datetime.now().isoformat()
+                            'failed_at': datetime.utcnow().isoformat()
                         }
                     },
                     queue="emails",
@@ -756,7 +756,7 @@ def send_verification_email_task(self, email_data: Dict):
             'success': True,
             'recipient': to_email,
             'email_type': 'payment_confirmation',
-            'sent_at': datetime.now().isoformat(),
+            'sent_at': datetime.utcnow().isoformat(),
             'task_id': task_id
         }
         
@@ -852,7 +852,7 @@ def payment_health_check_task(self):
             .limit(1)\
             .execute()
         
-        yesterday = datetime.now() - timedelta(days=1)
+        yesterday = datetime.utcnow() - timedelta(days=1)
         
         analytics_result = supabase_client.table('payment_analytics')\
             .select('*')\
@@ -867,7 +867,7 @@ def payment_health_check_task(self):
             'last_24h_payments': analytics.get('total_payments', 0),
             'last_24h_revenue': float(analytics.get('total_revenue', 0)),
             'last_24h_emails': analytics.get('emails_sent', 0),
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.utcnow().isoformat()
         }
         
         logger.info(f"Payment system health check completed: {health_status}")
@@ -879,7 +879,7 @@ def payment_health_check_task(self):
             'stripe_connection': False,
             'supabase_connection': False,
             'error': str(e),
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.utcnow().isoformat()
         }
 
 # Analicys section  
@@ -891,7 +891,7 @@ def send_daily_report_task(self):
     print("="*50)
     print("TASK SEND_DAILY_REPORT_TASK CHIAMATO!")
     print(f"Task ID: {self.request.id}")
-    print(f"Timestamp: {datetime.now()}")
+    print(f"Timestamp: {datetime.utcnow()}")
     print("="*50)
     try:
         logger.info(f"🚀 TASK STARTED!")
@@ -906,7 +906,7 @@ def send_daily_report_task(self):
         return {
             'success': result,
             'email_type': 'analytics',
-            'sent_at': datetime.now().isoformat(),
+            'sent_at': datetime.utcnow().isoformat(),
         }
         
     except Exception as e:
@@ -929,7 +929,7 @@ def process_expiring_subscriptions(self):
     print("="*50)
     print("TASK process_expiring_subscriptions CHIAMATO!")
     print(f"Task ID: {self.request.id}")
-    print(f"Timestamp: {datetime.now()}")
+    print(f"Timestamp: {datetime.utcnow()}")
     print("="*50)
     try:
         logger.info(f"🚀 TASK STARTED!")
@@ -1009,7 +1009,7 @@ def process_expiring_subscriptions(self):
         return {
             'success': True,
             'email_type': 'subscription_expiring',
-            'sent_at': datetime.now().isoformat(),
+            'sent_at': datetime.utcnow().isoformat(),
         }
         
     except Exception as e:
@@ -1030,7 +1030,7 @@ def process_expired_subscriptions(self):
     print("="*50)
     print("TASK process_expired_subscriptions CHIAMATO!")
     print(f"Task ID: {self.request.id}")
-    print(f"Timestamp: {datetime.now()}")
+    print(f"Timestamp: {datetime.utcnow()}")
     print("="*50)
     try:
         logger.info(f"🚀 TASK STARTED!")
@@ -1099,7 +1099,7 @@ def process_expired_subscriptions(self):
                 supabase_client.table("user_subscriptions") \
                             .update({"expired_mail_sent": True,
                                      'status': 'canceled',
-                                     'canceled_at': datetime.now().isoformat()}) \
+                                     'canceled_at': datetime.utcnow().isoformat()}) \
                             .eq("id", subscription['id']) \
                             .execute()
                 
@@ -1112,7 +1112,7 @@ def process_expired_subscriptions(self):
         return {
             'success': True,
             'email_type': 'subscription_expired',
-            'sent_at': datetime.now().isoformat(),
+            'sent_at': datetime.utcnow().isoformat(),
         }
         
     except Exception as e:

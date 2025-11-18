@@ -84,7 +84,7 @@ class EmailService:
                     'payment_intent_id': payment_intent_id,
                     'subscription_id': subscription_id,
                     'metadata': metadata or {},
-                    'created_at': datetime.now().isoformat()
+                    'created_at': datetime.utcnow().isoformat()
                 }
                 
                 result = supabase_client.table('email_queue').insert(email_queue_data).execute()
@@ -117,7 +117,7 @@ class EmailService:
                     self._add_attachment(message, attachment)
 
             # 🔥 INVIA EMAIL
-            start_time = datetime.now()
+            start_time = datetime.utcnow()
             context = ssl.create_default_context()
             
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
@@ -130,14 +130,14 @@ class EmailService:
                 text = message.as_string()
                 server.sendmail(self.sender_email, [to_email], text)
 
-            processing_time_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            processing_time_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
             
             # 🔥 AGGIORNA STATUS COME INVIATA
             if email_queue_id:
                 try:
                     supabase_client.table('email_queue').update({
                         'status': 'sent',
-                        'sent_at': datetime.now().isoformat(),
+                        'sent_at': datetime.utcnow().isoformat(),
                         'processing_time_ms': processing_time_ms
                     }).eq('id', email_queue_id).execute()
                     
@@ -156,10 +156,10 @@ class EmailService:
                 try:
                     supabase_client.table('email_queue').update({
                         'status': 'failed',
-                        'failed_at': datetime.now().isoformat(),
+                        'failed_at': datetime.utcnow().isoformat(),
                         'error_message': str(e),
                         'retry_count': 0,
-                        'next_retry_at': datetime.now().isoformat()
+                        'next_retry_at': datetime.utcnow().isoformat()
                     }).eq('id', email_queue_id).execute()
                     
                 except Exception as db_error:
@@ -695,7 +695,7 @@ class EmailService:
                 elif variable in ['peak_hour', 'low_hour']:
                     default_value = "12"
                 elif variable == 'generation_time':
-                    default_value = datetime.now().strftime("%H:%M CET")
+                    default_value = datetime.utcnow().strftime("%H:%M UTC")
                 elif variable == 'report_date':
                     default_value = date.today().strftime("%B %d, %Y")
                 
@@ -731,7 +731,7 @@ def send_payment_confirmation_email(
             'customer_name': customer_name or to_email.split('@')[0].title(),
             'plan_type': plan_type,
             'amount': amount,
-            'payment_date': datetime.now().strftime("%d/%m/%Y alle %H:%M"),
+            'payment_date': datetime.utcnow().strftime("%d/%m/%Y alle %H:%M UTC"),
             'payment_intent_id': payment_intent_id,
         }
         
@@ -821,7 +821,7 @@ def create_or_update_email_template(
             'text_template': text_template,
             'version': version,
             'is_active': is_active,
-            'updated_at': datetime.now().isoformat()
+            'updated_at': datetime.utcnow().isoformat()
         }
         
         if existing.data:
@@ -834,7 +834,7 @@ def create_or_update_email_template(
             logger.info(f"✅ Updated email template: {name} v{version}")
         else:
             # Crea nuovo
-            template_data['created_at'] = datetime.now().isoformat()
+            template_data['created_at'] = datetime.utcnow().isoformat()
             result = supabase_client.table('email_templates')\
                 .insert(template_data)\
                 .execute()
@@ -850,7 +850,7 @@ def get_email_statistics(days: int = 7) -> Dict:
     """Ottieni statistiche email degli ultimi N giorni"""
     try:
         from datetime import timedelta
-        cutoff_date = datetime.now() - timedelta(days=days)
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
         
         result = supabase_client.table('email_queue')\
             .select('status, email_type')\

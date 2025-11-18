@@ -23,7 +23,7 @@ class AnalyticsDB:
         
         return DailyMetrics(
             report_date=target_date.strftime("%B %d, %Y"),
-            generation_time=datetime.now().strftime("%H:%M CET"),
+            generation_time=datetime.utcnow().strftime("%H:%M UTC"),
             
             # Core
             total_analyses=core_metrics['total_analyses'],

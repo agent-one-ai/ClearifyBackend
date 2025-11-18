@@ -74,7 +74,7 @@ class SupabasePaymentService:
             if completed_at:
                 update_data['completed_at'] = completed_at.isoformat()
             elif status == 'succeeded':
-                update_data['completed_at'] = datetime.now().isoformat()
+                update_data['completed_at'] = datetime.utcnow().isoformat()
             
             response = self.client.table('payment_intents')\
                 .update(update_data)\
@@ -112,7 +112,7 @@ class SupabasePaymentService:
             
             # Calcola le date se non fornite
             if not start_date:
-                start_date = datetime.now()
+                start_date = datetime.utcnow()
             
             if not end_date:
                 if plan_type == "yearly":
@@ -134,7 +134,7 @@ class SupabasePaymentService:
                 "status": status,
                 "start_date": start_date.isoformat(),
                 "end_date": end_date.isoformat(),
-                "last_payment_date": datetime.now().isoformat(),
+                "last_payment_date": datetime.utcnow().isoformat(),
                 "amount_paid": amount_paid,
                 "currency": currency,
                 "metadata": metadata or {}
@@ -196,7 +196,7 @@ class SupabasePaymentService:
             response = self.client.table('user_subscriptions')\
                 .update({
                     'status': 'canceled',
-                    'canceled_at': datetime.now().isoformat()
+                    'canceled_at': datetime.utcnow().isoformat()
                 })\
                 .eq('id', subscription_id)\
                 .execute()
@@ -213,7 +213,7 @@ class SupabasePaymentService:
                 .select('*')\
                 .eq('email', email)\
                 .eq('status', 'active')\
-                .gte('end_date', datetime.now().isoformat())\
+                .gte('end_date', datetime.utcnow().isoformat())\
                 .order('created_at', desc=True)\
                 .limit(1)\
                 .execute()
@@ -267,7 +267,7 @@ class SupabasePaymentService:
             update_data = {
                 'processed': success,
                 'processing_status': 'completed' if success else 'failed',
-                'processed_at': datetime.now().isoformat()
+                'processed_at': datetime.utcnow().isoformat()
             }
             
             if error_message:
@@ -290,7 +290,7 @@ class SupabasePaymentService:
             # Usa la vista che abbiamo creato
             response = self.client.table('payment_dashboard')\
                 .select('*')\
-                .gte('payment_date', (datetime.now() - timedelta(days=days)).date())\
+                .gte('payment_date', (datetime.utcnow() - timedelta(days=days)).date())\
                 .execute()
             
             if response.data:
@@ -322,7 +322,7 @@ class SupabasePaymentService:
     async def get_expiring_subscriptions(self, days_ahead: int = 7) -> List[Dict]:
         """Ottiene subscription che scadono presto"""
         try:
-            cutoff_date = (datetime.now() + timedelta(days=days_ahead)).isoformat()
+            cutoff_date = (datetime.utcnow() + timedelta(days=days_ahead)).isoformat()
             
             response = self.client.table('user_subscriptions')\
                 .select('*')\
@@ -339,7 +339,7 @@ class SupabasePaymentService:
     async def cleanup_old_payment_intents(self, days: int = 30) -> int:
         """Pulisce vecchi payment intent non completati"""
         try:
-            cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
+            cutoff_date = (datetime.utcnow() - timedelta(days=days)).isoformat()
             
             # Prima ottieni i record da eliminare
             response = self.client.table('payment_intents')\
