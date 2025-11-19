@@ -95,6 +95,7 @@ celery_app.conf.update(
         "send_daily_report_task": {"queue": "reports"},
         "process_expiring_subscriptions": {"queue": "subscriptions"},
         "process_expired_subscriptions": {"queue": "subscriptions"},
+        "process_free_user_deletions": {"queue": "subscriptions"},
         #"cleanup-old-payment-intents-task": {"queue": "cleanup"},
     },
     
@@ -143,6 +144,10 @@ celery_app.conf.beat_schedule = {
     },
     "process-expired-subscriptions": {
             "task": "process_expired_subscriptions",
+            "schedule": crontab(minute='*/2')
+    },
+    "process-free-user-deletions": {
+            "task": "process_free_user_deletions",
             "schedule": crontab(minute='*/2')
     },
 }

@@ -640,7 +640,6 @@ async def verifyUserEmail(verification_data: VerificationTokenRequest, request: 
     except Exception as e:
         print(f"ERROR: Exception type: {type(e).__name__}")
 
-
 @router.post("/login")
 async def login_user(login_data: UserLoginRequest, request: Request):
     """Login con cookie httpOnly HTTPS - CORRETTO"""
@@ -1099,14 +1098,347 @@ async def get_current_user_data(
     current_user: dict = Depends(get_current_user_from_cookie)
 ):
     """Restituisce i dati dell'utente autenticato dai cookie HTTPS"""
-    
+
     user_record = current_user.copy()
     user_record.pop("password_hash", None)
-    
+
     if os.getenv("DEBUG", "false").lower() == "true":
         print(f"✅ User data retrieved for: {user_record.get('email')}")
-    
+
     return UserResponse(**user_record)
+
+@router.delete("/user/delete-account")
+async def delete_user_account(
+    request: Request,
+    current_user: dict = Depends(get_current_user_from_cookie)
+):
+    """
+    Richiesta di cancellazione account
+
+    Strategia:
+    1. Marca cancellation_request = TRUE
+    2. Un job schedulato gestirà la cancellazione effettiva al termine dell'abbonamento
+    3. Per utenti free: cancellazione immediata
+    4. Per utenti premium: cancellazione differita a fine abbonamento
+    """
+    start_time = time.time()
+    user_id = current_user.get("id")
+    user_email = current_user.get("email")
+    subscription_tier = current_user.get("subscription_tier", "free")
+
+    debug_request_info(request)
+
+    try:
+        print(f"DEBUG: Starting account deletion request for user {user_id} ({user_email})")
+
+        # Verifica che l'utente non abbia già richiesto la cancellazione
+        if current_user.get("cancellation_request"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "ALREADY_REQUESTED",
+                    "message": "Account deletion already requested"
+                }
+            )
+
+        current_time = get_utc_now()
+
+        # Marca la richiesta di cancellazione
+        cancellation_data = {
+            "cancellation_request": True,
+            "updated_at": current_time
+        }
+
+        print(f"DEBUG: Marking cancellation request for user: {user_id}")
+
+        # Aggiorna il flag di cancellazione
+        result = supabase_client.table("users").update(cancellation_data).eq("id", user_id).execute()
+
+        if not result.data:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "DELETION_REQUEST_FAILED",
+                    "message": "Failed to request account deletion"
+                }
+            )
+
+        print(f"DEBUG: Cancellation request marked successfully for {user_id}")
+
+        # Log security event
+        try:
+            await log_security_event(
+                supabase_client=supabase_client,
+                event="account_deletion_requested",
+                client_ip=api_logger._get_client_ip(request),
+                details=f"User ID: {user_id}, Email: {user_email}, Tier: {subscription_tier}",
+                user_id=user_id
+            )
+        except Exception as log_error:
+            print(f"WARNING: Failed to log security event: {str(log_error)}")
+
+        # Messaggio diverso in base al tipo di abbonamento
+        if subscription_tier == "free":
+            message = "Account deletion scheduled. Your account will be deleted shortly."
+        else:
+            message = "Account deletion scheduled. Your account will be deleted at the end of your subscription period."
+
+        # Crea risposta e pulisci i cookie (logout)
+        response_data = {
+            "message": message,
+            "cancellation_requested_at": current_time,
+            "subscription_tier": subscription_tier
+        }
+
+        response = JSONResponse(content=response_data)
+        clear_auth_cookies(response)
+
+        # Log API call
+        try:
+            process_time = (time.time() - start_time) * 1000
+            await api_logger.log_api_call(
+                request=request,
+                response_time=process_time,
+                user_id=user_id,
+                additional_data={
+                    "action": "account_deletion_request",
+                    "email": user_email[:50],
+                    "subscription_tier": subscription_tier
+                }
+            )
+        except Exception as log_error:
+            print(f"WARNING: Failed to log API call: {str(log_error)}")
+
+        print(f"DEBUG: Account deletion request completed for {user_id}")
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"ERROR: Account deletion request failed for {user_id}: {str(e)}")
+        print(f"ERROR: Exception type: {type(e).__name__}")
+
+        # Log errore
+        try:
+            process_time = (time.time() - start_time) * 1000
+            await api_logger.log_api_call(
+                request=request,
+                response_time=process_time,
+                user_id=user_id,
+                error=str(e)[:200]
+            )
+        except Exception as log_error:
+            print(f"WARNING: Failed to log error: {str(log_error)}")
+
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "INTERNAL_ERROR",
+                "message": "Failed to request account deletion. Please try again."
+            }
+        )
+
+@router.post("/requestPasswordReset")
+async def request_password_reset(email_data: VerificationEmailRequestRequest, request: Request):
+    """Metodo per richiedere il reset password - invia email con token"""
+
+    debug_request_info(request)
+    start_time = time.time()
+
+    try:
+        if not email_data.email:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "INVALID_EMAIL",
+                    "message": "Email non valida"
+                }
+            )
+
+        # Trova utente
+        user_result = supabase_client.table("users").select("*").eq("email", email_data.email).execute()
+
+        if not user_result.data:
+            # Per sicurezza, non rivelare se l'email esiste o no
+            # Restituisci sempre success
+            return JSONResponse(content={"success": True})
+
+        user_record = user_result.data[0]
+        user_id = user_record["id"]
+
+        # Genera sempre un nuovo token per ogni richiesta
+        reset_token = get_verification_token()
+
+        update_data = {
+            "resetPassword_token": reset_token,
+            "updated_at": get_utc_now()
+        }
+
+        # Salva il token su database
+        supabase_client.table("users") \
+            .update(update_data) \
+            .eq("email", user_record["email"]) \
+            .execute()
+
+        # Invia email con il token di reset
+        from app.workers.tasks import send_password_reset_email_task
+
+        email_task = send_password_reset_email_task.apply_async(
+            kwargs={
+                'email_data': {
+                    'to_email': email_data.email,
+                    'username': user_record.get("full_name") if user_record.get("full_name") else email_data.email,
+                    'resetToken': reset_token,
+                }
+            },
+            queue="emails",
+            priority=6,
+            retry=True,
+            retry_policy={
+                'max_retries': 3,
+                'interval_start': 60,
+                'interval_step': 60,
+                'interval_max': 300
+            }
+        )
+
+        # Log security event
+        try:
+            await log_security_event(
+                supabase_client=supabase_client,
+                event="password_reset_requested",
+                client_ip=api_logger._get_client_ip(request),
+                details=f"Email: {email_data.email}",
+                user_id=user_id
+            )
+        except Exception as log_error:
+            print(f"WARNING: Failed to log security event: {str(log_error)}")
+
+        response_data = {"success": True}
+        print(f"DEBUG: Password reset requested for {email_data.email}")
+
+        return JSONResponse(content=response_data)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"ERROR: Password reset request failed: {str(e)}")
+        print(f"ERROR: Exception type: {type(e).__name__}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "INTERNAL_ERROR",
+                "message": "Failed to process password reset request"
+            }
+        )
+
+@router.post("/resetPassword")
+async def reset_password(reset_data: dict, request: Request):
+    """Metodo per completare il reset password con token"""
+
+    debug_request_info(request)
+    start_time = time.time()
+
+    try:
+        email = reset_data.get("email")
+        token = reset_data.get("token")
+        new_password = reset_data.get("newPassword")
+
+        if not email or not token or not new_password:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "MISSING_FIELDS",
+                    "message": "Email, token and new password are required"
+                }
+            )
+
+        # Verifica lunghezza minima password
+        if len(new_password) < 8:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "PASSWORD_TOO_SHORT",
+                    "message": "Password must be at least 8 characters long"
+                }
+            )
+
+        # Trova utente e verifica token
+        user_result = supabase_client.table("users") \
+            .select("*") \
+            .eq("email", email) \
+            .eq("resetPassword_token", token) \
+            .execute()
+
+        if not user_result.data:
+            try:
+                await log_security_event(
+                    supabase_client=supabase_client,
+                    event="password_reset_fail_invalid_token",
+                    client_ip=api_logger._get_client_ip(request),
+                    details=f"Email: {email}"
+                )
+            except Exception as log_error:
+                print(f"WARNING: Failed to log security event: {str(log_error)}")
+
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "INVALID_TOKEN",
+                    "message": "Invalid or expired reset token"
+                }
+            )
+
+        user_record = user_result.data[0]
+        user_id = user_record["id"]
+
+        # Hash della nuova password
+        hashed_password = pwd_context.hash(new_password)
+
+        # Aggiorna password e rimuovi il token di reset
+        update_data = {
+            "password_hash": hashed_password,
+            "resetPassword_token": None,
+            "updated_at": get_utc_now()
+        }
+
+        supabase_client.table("users") \
+            .update(update_data) \
+            .eq("id", user_id) \
+            .execute()
+
+        # Log security event
+        try:
+            await log_security_event(
+                supabase_client=supabase_client,
+                event="password_reset_completed",
+                client_ip=api_logger._get_client_ip(request),
+                details=f"User ID: {user_id}, Email: {email}",
+                user_id=user_id
+            )
+        except Exception as log_error:
+            print(f"WARNING: Failed to log security event: {str(log_error)}")
+
+        response_data = {
+            "success": True,
+            "message": "Password reset successfully"
+        }
+
+        print(f"DEBUG: Password reset completed for {email}")
+        return JSONResponse(content=response_data)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"ERROR: Password reset failed: {str(e)}")
+        print(f"ERROR: Exception type: {type(e).__name__}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "INTERNAL_ERROR",
+                "message": "Failed to reset password"
+            }
+        )
 
 # Endpoint legacy per compatibilità
 @router.post("/google/token", response_model=AuthResponse)

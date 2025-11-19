@@ -428,16 +428,16 @@ class EmailService:
             #Creol'URL completo per la verifica dell'email
             verification_url = f"https://localhost:3000/verifyEmail?token={verificationToken}"
 
-            base_url = "https://localhost:3000" 
+            base_url = "https://localhost:3000"
 
             context = {
                 'user_name': username,
                 'verification_url': verification_url,
                 'base_url': base_url
             }
-            
+
             subject, html_body, text_body = self.render_template_and_subject("verify_email", context)
-            
+
             return self.send_email_sync(
                 to_email=to_email,
                 subject=subject,
@@ -448,9 +448,47 @@ class EmailService:
                     'user_name': username
                 }
             )
-            
+
         except Exception as e:
             logger.error(f"Error in send_verification_email: {str(e)}")
+            return False
+
+    def send_password_reset_email(
+        self,
+        to_email: str,
+        username: str,
+        resetToken: str
+    ) -> bool:
+        """
+        Metodo del servizio per inviare email di reset password
+        """
+        try:
+            # Crea l'URL completo per il reset della password con email e token
+            reset_url = f"https://localhost:3000/reset-password?token={resetToken}&email={to_email}"
+
+            base_url = "https://localhost:3000"
+
+            context = {
+                'user_name': username,
+                'reset_url': reset_url,
+                'base_url': base_url
+            }
+
+            subject, html_body, text_body = self.render_template_and_subject("reset_password", context)
+
+            return self.send_email_sync(
+                to_email=to_email,
+                subject=subject,
+                html_body=html_body,
+                text_body=text_body,
+                email_type="reset_password",
+                metadata={
+                    'user_name': username
+                }
+            )
+
+        except Exception as e:
+            logger.error(f"Error in send_password_reset_email: {str(e)}")
             return False
 
     def send_subscription_expiring_email(

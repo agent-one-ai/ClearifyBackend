@@ -795,6 +795,105 @@ def send_verification_email_task(self, email_data: Dict):
             'requires_manual_intervention': True
         }
 
+@celery_app.task(bind=True, name="send_password_reset_email_task", acks_late=True)
+def send_password_reset_email_task(self, email_data: Dict):
+    """
+    Task per inviare email di reset password
+    """
+    try:
+        to_email = email_data['to_email']
+        task_id = self.request.id
+
+        logger.info(f"Starting password reset email task {task_id} for {to_email}")
+
+        self.update_state(
+            state="PROCESSING",
+            meta={
+                "status": "sending_email",
+                "progress": 20,
+                "message": "Preparing email content...",
+                "recipient": to_email
+            }
+        )
+
+        logger.info(f"================RESET TOKEN======================")
+        logger.info(f"Token value {email_data['resetToken']}")
+
+        required_fields = ['to_email', 'username', 'resetToken']
+        for field in required_fields:
+            if not email_data.get(field):
+                raise ValueError(f"Missing required email field: {field}")
+
+        self.update_state(
+            state="PROCESSING",
+            meta={
+                "status": "sending_email",
+                "progress": 50,
+                "message": "Sending email...",
+                "recipient": to_email
+            }
+        )
+
+        email_success = email_service.send_password_reset_email(email_data['to_email'], email_data['username'], email_data['resetToken'])
+
+        if not email_success:
+            raise ValueError("Email service returned failure status")
+
+        self.update_state(
+            state="SUCCESS",
+            meta={
+                "status": "completed",
+                "progress": 100,
+                "message": "Email sent successfully",
+                "recipient": to_email
+            }
+        )
+
+        logger.info(f"Password reset email sent successfully to {to_email}")
+
+        return {
+            'success': True,
+            'recipient': to_email,
+            'email_type': 'password_reset',
+            'sent_at': datetime.utcnow().isoformat(),
+            'task_id': task_id
+        }
+
+    except Exception as e:
+        to_email = email_data.get('to_email', 'unknown')
+        logger.error(f"Failed to send password reset email to {to_email}: {str(e)}")
+
+        self.update_state(
+            state="FAILURE",
+            meta={
+                "status": "failed",
+                "progress": 0,
+                "error": str(e),
+                "message": "Email sending failed",
+                "recipient": to_email
+            }
+        )
+
+        if self.request.retries < 3:
+            retry_countdown = 60 * (2 ** self.request.retries)
+            logger.info(f"Retrying email task in {retry_countdown} seconds (attempt {self.request.retries + 1}/3)")
+
+            raise self.retry(
+                exc=e,
+                countdown=retry_countdown,
+                max_retries=3
+            )
+
+        logger.critical(f"Password reset email permanently failed for {to_email} after 3 retries")
+
+        return {
+            'success': False,
+            'error': str(e),
+            'max_retries_reached': True,
+            'recipient': to_email,
+            'requires_manual_intervention': True
+        }
+
 @celery_app.task(bind=True, name="check_expiring_subscriptions_task", acks_late=True)
 def check_expiring_subscriptions_task(self):
     """Task per controllare subscription in scadenza"""
@@ -1039,35 +1138,37 @@ def process_expired_subscriptions(self):
         now = datetime.now(timezone.utc).isoformat()
 
         # Cerco tutti gli abbonamenti che:
-        # - sono scaduti 
+        # - sono scaduti
         # - sono ancora attivi
         # - non è stata ancora inviata la mail
         result = supabase_client.table("user_subscriptions") \
-            .select("users(full_name), plan_type, end_date, email, id") \
+            .select("users(full_name, id, cancellation_request), plan_type, end_date, email, id") \
             .eq("status", "active") \
             .eq("expired_mail_sent", False) \
             .lt("end_date", now) \
             .order("end_date", desc=True) \
             .limit(100)\
             .execute()
-        
+
         # Creo la lista degli abbonamenti scaduti e una lista di oggetti
         users_seen = set()
         expired_subscriptions = []
-        
+
         # Ciclo su tutti gli abbonamenti trovati
         for record in result.data:
             email = record['email']
-            
+
             # Salto se ho già elaborato questo utente
             if email in users_seen:
                 continue
-            
+
             # Aggiungo l'utente
             users_seen.add(email)
-            
+
             # Recupero tutte le variabili necessarie e le aggiungo alla lista
             record['full_name'] = record['users']['full_name']
+            record['user_id'] = record['users']['id']
+            record['cancellation_request'] = record['users'].get('cancellation_request', False)
             expired_subscriptions.append(record)
         
         # Ciclo su tutti gli abbonamenti scaduti
@@ -1102,12 +1203,44 @@ def process_expired_subscriptions(self):
                                      'canceled_at': datetime.utcnow().isoformat()}) \
                             .eq("id", subscription['id']) \
                             .execute()
-                
-                # Aggiorno anche l'anagrafica del utente
-                supabase_client.table("users") \
-                        .update({"subscription_tier": 'free'}) \
-                        .eq("email", subscription['email']) \
-                        .execute()
+
+                # Controllo se l'utente ha richiesto la cancellazione dell'account
+                if subscription.get('cancellation_request', False):
+                    logger.info(f"🗑️ Processing account deletion for user {subscription['email']} (subscription expired + cancellation requested)")
+
+                    try:
+                        # Prima cancello tutti i payment_intents associati all'utente
+                        logger.info(f"🗑️ Deleting payment intents for user {subscription['email']}")
+                        supabase_client.table("payment_intents") \
+                                .delete() \
+                                .eq("customer_email", subscription['email']) \
+                                .execute()
+
+                        # Poi cancello tutte le user_subscriptions associate all'utente
+                        logger.info(f"🗑️ Deleting subscriptions for user {subscription['email']}")
+                        supabase_client.table("user_subscriptions") \
+                                .delete() \
+                                .eq("email", subscription['email']) \
+                                .execute()
+
+                        # Cancellazione completa del record utente
+                        logger.info(f"🗑️ Deleting user record for {subscription['email']}")
+                        supabase_client.table("users") \
+                                .delete() \
+                                .eq("id", subscription['user_id']) \
+                                .execute()
+
+                        logger.info(f"✅ Account deleted successfully for user {subscription['email']}")
+                    except Exception as delete_error:
+                        logger.error(f"❌ Failed to delete account for user {subscription['email']}: {str(delete_error)}")
+                else:
+                    # Aggiorno solo il tier a free se non c'è richiesta di cancellazione
+                    supabase_client.table("users") \
+                            .update({"subscription_tier": 'free'}) \
+                            .eq("email", subscription['email']) \
+                            .execute()
+
+                    logger.info(f"⬇️ Downgraded user {subscription['email']} to free tier")
 
         return {
             'success': True,
@@ -1118,6 +1251,94 @@ def process_expired_subscriptions(self):
     except Exception as e:
         logger.error(f"Failed to process expired subscriptions task:  {str(e)}")
             
+        return {
+            'success': False,
+            'error': str(e),
+            'max_retries_reached': True,
+            'requires_manual_intervention': True
+        }
+
+
+@celery_app.task(bind=True, name="process_free_user_deletions", max_retries=3, default_retry_delay=60, acks_late=True)
+def process_free_user_deletions(self):
+    """
+    Task schedulato per processare cancellazioni di utenti free
+    Gli utenti free non hanno abbonamenti, quindi vanno gestiti separatamente
+    """
+    logger.info("="*50)
+    logger.info(f"🗑️ PROCESSING FREE USER ACCOUNT DELETIONS")
+    print("="*50)
+
+    try:
+        logger.info(f"🚀 TASK STARTED!")
+
+        # Cerco tutti gli utenti free che hanno richiesto la cancellazione
+        result = supabase_client.table("users") \
+            .select("id, email, full_name, cancellation_request, subscription_tier") \
+            .eq("cancellation_request", True) \
+            .eq("subscription_tier", "free") \
+            .execute()
+
+        if not result.data:
+            logger.info("✅ No free users to delete")
+            return {
+                'success': True,
+                'deleted_count': 0,
+                'message': 'No free users pending deletion'
+            }
+
+        deleted_count = 0
+        failed_count = 0
+
+        # Processo ogni utente free
+        for user in result.data:
+            user_id = user['id']
+            user_email = user['email']
+
+            try:
+                logger.info(f"🗑️ Deleting free user account: {user_email} (ID: {user_id})")
+
+                # Prima cancello tutti i payment_intents associati all'utente
+                logger.info(f"🗑️ Deleting payment intents for user {user_email}")
+                supabase_client.table("payment_intents") \
+                        .delete() \
+                        .eq("customer_email", user_email) \
+                        .execute()
+
+                # Poi cancello tutte le user_subscriptions associate all'utente
+                logger.info(f"🗑️ Deleting subscriptions for user {user_email}")
+                supabase_client.table("user_subscriptions") \
+                        .delete() \
+                        .eq("email", user_email) \
+                        .execute()
+
+                # Cancellazione completa del record utente
+                logger.info(f"🗑️ Deleting user record for {user_email}")
+                supabase_client.table("users") \
+                        .delete() \
+                        .eq("id", user_id) \
+                        .execute()
+
+                logger.info(f"✅ Free user account deleted successfully: {user_email}")
+                deleted_count += 1
+
+            except Exception as user_error:
+                logger.error(f"❌ Failed to delete free user {user_email}: {str(user_error)}")
+                failed_count += 1
+                continue
+
+        logger.info(f"✅ Task completed: {deleted_count} deleted, {failed_count} failed")
+
+        return {
+            'success': True,
+            'deleted_count': deleted_count,
+            'failed_count': failed_count,
+            'processed_at': datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Failed to process free user deletions: {str(e)}")
+
         return {
             'success': False,
             'error': str(e),
