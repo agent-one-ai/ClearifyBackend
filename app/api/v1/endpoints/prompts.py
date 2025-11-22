@@ -19,26 +19,12 @@ from typing import List
 
 @router.get("/prompts", response_model=List[Prompt])
 async def get_prompts(request: Request):
-    start_time = time.time()
     try:
         result = supabase_client.table("prompts").select("*").execute()
         prompts_data = result.data or []
-
-        process_time = (time.time() - start_time) * 1000
-        await api_logger.log_api_call(
-            request=request,
-            response_time=process_time,
-            additional_data={"action": "get_prompts", "count": len(tones_data)}
-        )
 
         return prompts_data
 
     except Exception as e:
         logger.exception("Error getting prompts")
-        process_time = (time.time() - start_time) * 1000
-        await api_logger.log_api_call(
-            request=request,
-            response_time=process_time,
-            error=str(e)
-        )
         raise HTTPException(status_code=500, detail=str(e))

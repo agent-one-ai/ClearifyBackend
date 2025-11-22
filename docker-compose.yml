@@ -86,7 +86,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: clearify-worker
-    command: celery -A app.core.celery_app worker --loglevel=info --queues=subscriptions,reports,text_processing,webhooks,payments,emails --concurrency=4 --hostname=worker-local@%h
+    command: celery -A app.core.celery_app worker --loglevel=info --queues=subscriptions,reports,text_processing,webhooks,payments,emails,cleanup --concurrency=4 --hostname=worker-local@%h
     volumes:
       - .:/app
       - ./certs:/app/certs:ro

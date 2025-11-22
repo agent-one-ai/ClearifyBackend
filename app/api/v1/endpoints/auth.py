@@ -254,20 +254,8 @@ async def get_google_auth_url(request: Request):
             print(f"🔗 Generated Google auth URL with redirect: {redirect_uri}")
         
         response = GoogleAuthUrlResponse(auth_url=auth_url)
-        process_time = (time.time() - start_time) * 1000
-        await api_logger.log_api_call(
-            request=request,
-            response_time=process_time,
-            additional_data={"action": "google_auth_url_generated", "redirect_uri": redirect_uri}
-        )
         return response
     except Exception as e:
-        process_time = (time.time() - start_time) * 1000
-        await api_logger.log_api_call(
-            request=request,
-            response_time=process_time,
-            error=str(e)
-        )
         raise HTTPException(status_code=500, detail=f"Errore generando URL Google: {str(e)}")
 
 @router.post("/google/callback")
@@ -387,21 +375,7 @@ async def google_callback(request: Request):
         
         # Crea la risposta e imposta i cookie HTTPS
         response = JSONResponse(content=response_data)
-        set_auth_cookies(response, access_token, refresh_token)
-        
-        # Logging
-        process_time = (time.time() - start_time) * 1000
-        await api_logger.log_api_call(
-            request=request,
-            response_time=process_time,
-            user_id=user_id,
-            additional_data={
-                "action": action, 
-                "email": email, 
-                "authentication_method": "google_oauth",
-                "https_enabled": settings.FRONTEND_URL.startswith("https://")
-            }
-        )
+        set_auth_cookies(response, access_token, refresh_token)        
         
         if os.getenv("DEBUG", "false").lower() == "true":
             print(f"✅ Google authentication successful for {email}")
@@ -409,21 +383,8 @@ async def google_callback(request: Request):
         return response
         
     except requests.RequestException as e:
-        process_time = (time.time() - start_time) * 1000
-        await api_logger.log_api_call(
-            request=request,
-            response_time=process_time,
-            error=f"Google API error: {str(e)}"
-        )
         raise HTTPException(status_code=400, detail=f"Google API error: {str(e)}")
     except Exception as e:
-        process_time = (time.time() - start_time) * 1000
-        await api_logger.log_api_call(
-            request=request,
-            response_time=process_time,
-            user_id=user_id,
-            error=str(e)
-        )
         raise HTTPException(status_code=500, detail=f"Errore autenticazione: {str(e)}")
 
 #Creo un endpoint che accoda una task per mandare email di verifica esistenza
@@ -790,16 +751,6 @@ async def login_user(login_data: UserLoginRequest, request: Request):
         
         try:
             print(f"DEBUG: Logging API call")
-            process_time = (time.time() - start_time) * 1000
-            await api_logger.log_api_call(
-                request=request,
-                response_time=process_time,
-                user_id=user_id,
-                additional_data={
-                    "action": "login",
-                    "email": login_data.email[:50]
-                }
-            )
             print(f"DEBUG: API call logged successfully")
         except Exception as log_error:
             print(f"WARNING: Failed to log login: {str(log_error)}")
@@ -812,18 +763,7 @@ async def login_user(login_data: UserLoginRequest, request: Request):
     except Exception as e:
         print(f"ERROR: Login failed for {login_data.email}: {str(e)}")
         print(f"ERROR: Exception type: {type(e).__name__}")
-        
-        try:
-            process_time = (time.time() - start_time) * 1000
-            await api_logger.log_api_call(
-                request=request,
-                response_time=process_time,
-                user_id=user_id,
-                error=str(e)[:200]
-            )
-        except Exception as log_error:
-            print(f"WARNING: Failed to log error: {str(log_error)}")
-            
+    
         raise HTTPException(
             status_code=500, 
             detail={
@@ -969,16 +909,6 @@ async def register_user(user_data: UserRegisterRequest, request: Request):
         # Log API call con gestione errori migliorata
         try:
             print(f"DEBUG: Logging API call")
-            process_time = (time.time() - start_time) * 1000
-            await api_logger.log_api_call(
-                request=request,
-                response_time=process_time,
-                user_id=user_id,
-                additional_data={
-                    "action": "register",
-                    "email": user_data.email[:50]
-                }
-            )
             print(f"DEBUG: API call logged successfully")
         except Exception as log_error:
             print(f"WARNING: Failed to log API call: {str(log_error)}")
@@ -992,18 +922,6 @@ async def register_user(user_data: UserRegisterRequest, request: Request):
         print(f"ERROR: Registration failed for {user_data.email}: {str(e)}")
         print(f"ERROR: Exception type: {type(e).__name__}")
         
-        # Log errore con gestione sicura
-        try:
-            process_time = (time.time() - start_time) * 1000
-            await api_logger.log_api_call(
-                request=request,
-                response_time=process_time,
-                user_id=user_id,
-                error=str(e)[:200]
-            )
-        except Exception as log_error:
-            print(f"WARNING: Failed to log error: {str(log_error)}")
-            
         raise HTTPException(
             status_code=500,
             detail={

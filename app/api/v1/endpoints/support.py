@@ -210,6 +210,7 @@ async def get_support_ticket(
         process_time = (time.time() - start_time) * 1000
         await api_logger.log_api_call(
             request=request,
+            response=request, # Muaad da guardare: tanto mi salvo solo lo status code su DB 
             response_time=process_time,
             additional_data={
                 "action": "get_support_ticket",
@@ -223,15 +224,16 @@ async def get_support_ticket(
         raise
     except Exception as e:
         logger.error(f"Error retrieving support ticket {ticket_id}: {str(e)}")
-        
+        error = HTTPException(status_code=500, detail="Failed to retrieve support ticket")
         process_time = (time.time() - start_time) * 1000
         await api_logger.log_api_call(
             request=request,
+            response=error,
             response_time=process_time,
             error=str(e)
         )
         
-        raise HTTPException(status_code=500, detail="Failed to retrieve support ticket")
+        return error
 
 @router.get("/tickets")
 async def list_support_tickets(
@@ -267,6 +269,7 @@ async def list_support_tickets(
         await api_logger.log_api_call(
             request=request,
             response_time=process_time,
+            response=request, # Muaad da guardare: tanto mi salvo solo lo status code su DB
             additional_data={
                 "action": "list_support_tickets",
                 "count": len(tickets_data),
@@ -287,12 +290,14 @@ async def list_support_tickets(
         
     except Exception as e:
         logger.error(f"Error listing support tickets: {str(e)}")
-        
+        error = HTTPException(status_code=500, detail="Failed to retrieve support tickets")
         process_time = (time.time() - start_time) * 1000
         await api_logger.log_api_call(
             request=request,
+            response=error,
             response_time=process_time,
             error=str(e)
         )
         
-        raise HTTPException(status_code=500, detail="Failed to retrieve support tickets")
+        return error
+        

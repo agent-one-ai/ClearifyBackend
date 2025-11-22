@@ -97,6 +97,7 @@ celery_app.conf.update(
         "process_expired_subscriptions": {"queue": "subscriptions"},
         "process_free_user_deletions": {"queue": "subscriptions"},
         #"cleanup-old-payment-intents-task": {"queue": "cleanup"},
+        "cleanup_tables_task": {"queue": "cleanup"},
     },
     
     # Task execution
@@ -123,15 +124,11 @@ celery_app.conf.update(
 
 # Configure Celery beat schedule (for periodic tasks)
 celery_app.conf.beat_schedule = {
-    # Cleanup Task  - TODO
-    # "cleanup-expired-tasks": {
-    #     "task": "app.workers.tasks.cleanup_expired_tasks",
-    #     "schedule": 3600.0,  # Every hour
-    # },
-    #"cleanup-old-payment-intents-task": {
-    #      "task": "cleanup_old_payment_intents_task",
-    #     "schedule": crontab()
-    # },
+    # Cleanup Task
+    "cleanup-old-records-task": {
+        "task": "cleanup_tables_task",
+        "schedule": crontab(minute='*/3')
+    },
     # Analytics Task
     "send-daily-report-task": {
         "task": "send_daily_report_task",

@@ -9,27 +9,31 @@ import hmac
 import hashlib
 import logging
 from app.schemas.payment import CreatePaymentIntentRequest, PaymentSuccessRequest, BillingDetails
-
+from app.core.logging import SupabaseAPILogger
 from app.workers.tasks import (
     create_payment_intent_task,
     process_payment_success_task,
     handle_webhook_event_task
 )
 from app.core.stripe_config import StripeConfig
-
+from app.core.supabase_client import supabase_client
+import time
 
 router = APIRouter()
 
 # Configurazione logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+api_logger = SupabaseAPILogger(supabase_client)
 
 @router.post("/create-payment-intent")
 async def create_payment_intent(request: CreatePaymentIntentRequest):
     """
     Endpoint per creare un Payment Intent tramite task Celery
     """
-    try:
+    start_time = time.time()
+    
+    try:       
         # Validazione del piano
         if not StripeConfig.is_valid_plan(request.metadata.plan):
             raise HTTPException(status_code=400, detail="Invalid plan type")
@@ -69,29 +73,65 @@ async def create_payment_intent(request: CreatePaymentIntentRequest):
             result = task.get(timeout=30)  # 30 secondi di timeout
         except Exception as e:
             logger.error(f"Task failed: {str(e)}")
-            raise HTTPException(status_code=500, detail="Payment intent creation failed")
-        
+            raise HTTPException(status_code=500, detail="Payment intent creation failed")    
+
         if not result.get('success'):
-            raise HTTPException(status_code=500, detail="Failed to create payment intent")
-        
-        return JSONResponse({
+            error = HTTPException(status_code=500, detail="Failed to create payment intent")
+            process_time = (time.time() - start_time) * 1000
+            await api_logger.log_api_call(
+                request=request,
+                response_time=process_time,
+                response=error,
+                error="Failed to create payment intent task",
+                user_email=request.billing_details.email,
+                endpoint='/create-payment-intent'
+            )
+            return error
+
+        response = JSONResponse({
             "client_secret": result['client_secret'],
             "customer_id": result['customer_id'],
             "payment_intent_id": result['payment_intent_id']
         })
+
+        # Loggo la chiamata
+        process_time = (time.time() - start_time) * 1000
+        await api_logger.log_api_call(
+            request=request,
+            response_time=process_time,
+            response=response,
+            additional_data={"action": "create_payment_intent", "result": str(result), "payment_intent_id": result['payment_intent_id']},
+            user_email=request.billing_details.email,
+            endpoint='/create-payment-intent'
+        )
         
+        return response
+    
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error creating payment intent: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        error = HTTPException(status_code=500, detail="Internal server error")
+        process_time = (time.time() - start_time) * 1000
+        await api_logger.log_api_call(
+            request=request,
+            response_time=process_time,
+            response=error,
+            error=str(e),
+            user_email=request.billing_details.email,
+            endpoint='/create-payment-intent'
+        )
+
+        return error
 
 @router.post("/payment-success")
 async def payment_success(request: PaymentSuccessRequest, background_tasks: BackgroundTasks):
     """
     Endpoint chiamato dal frontend quando il pagamento è completato
     """
-    try:
+    start_time = time.time()
+    
+    try:        
         # Prepara i dati per il task
         payment_data = {
             "payment_intent_id": request.paymentIntentId,
@@ -115,16 +155,40 @@ async def payment_success(request: PaymentSuccessRequest, background_tasks: Back
             queue="payments"
         )
 
-        return JSONResponse({
+        response = JSONResponse({
             "success": True,
             "message": "Payment is being processed",
             "task_id": task_id
         })
+
+        # Loggo la chiamata
+        process_time = (time.time() - start_time) * 1000
+        await api_logger.log_api_call(
+            request=request,
+            response_time=process_time,
+            response=response,
+            additional_data={"action": "payment_success", "task_id": str(task_id)},
+            user_email=request.customerEmail,
+            endpoint='/payment-success'
+        )
+
+        return response
         
     except Exception as e:
         logger.error(f"Error processing payment success: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error processing payment")
+        error = HTTPException(status_code=500, detail="Error processing payment")
+        process_time = (time.time() - start_time) * 1000
+        await api_logger.log_api_call(
+            request=request,
+            response_time=process_time,
+            response=error,
+            error=str(e),
+            user_email=request.customerEmail,
+            endpoint='/payment-success'
+        )
 
+        return error
+    
 @router.post("/webhooks/stripe")
 async def stripe_webhook(request: Request):
     """

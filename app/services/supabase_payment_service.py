@@ -137,7 +137,9 @@ class SupabasePaymentService:
                 "last_payment_date": datetime.utcnow().isoformat(),
                 "amount_paid": amount_paid,
                 "currency": currency,
-                "metadata": metadata or {}
+                "metadata": metadata or {},
+                "expiring_mail_sent": False,
+                "expired_mail_sent": False
             }
             
             if user_id:
@@ -336,7 +338,7 @@ class SupabasePaymentService:
             logger.error(f"Error getting expiring subscriptions: {e}")
             return []
     
-    async def cleanup_old_payment_intents(self, days: int = 30) -> int:
+    async def cleanup_old_failed_payment_intents(self, days: int = 60) -> int:
         """Pulisce vecchi payment intent non completati"""
         try:
             cutoff_date = (datetime.utcnow() - timedelta(days=days)).isoformat()

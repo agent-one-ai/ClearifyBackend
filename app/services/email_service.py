@@ -7,7 +7,7 @@ import email.mime.base
 import email.encoders
 from typing import Dict, Optional, List
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import asyncio
 import aiosmtplib
 import os
@@ -600,6 +600,39 @@ class EmailService:
             
             print(f"Errore invio email: {e}")
             return False
+    
+    # Cleanup Section
+    async def cleanup_old_failed_email_queue(self, days: int = 60) -> int:
+        """Pulisce vecchi email queues non completati"""
+        try:
+            cutoff_date = (datetime.utcnow() - timedelta(days=days)).isoformat()
+            
+            # Prima ottieni i record da eliminare
+            response = supabase_client.table('email_queue')\
+                .select('id')\
+                .neq('status', 'sent')\
+                .lt('created_at', cutoff_date)\
+                .execute()
+            
+            if not response.data:
+                return 0
+            
+            # Elimina i record
+            ids_to_delete = [record['id'] for record in response.data]
+            
+            delete_response = supabase_client.table('email_queue')\
+                .delete()\
+                .in_('id', ids_to_delete)\
+                .execute()
+            
+            deleted_count = len(response.data)
+            logger.info(f"Cleaned up {deleted_count} old email queues")
+            
+            return deleted_count
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up email queue: {e}")
+            return 0
 
     def _replace_template_variables(self, template: str, metrics: DailyMetrics) -> str:
         """Sostituisce tutte le variabili {{}} nel template"""

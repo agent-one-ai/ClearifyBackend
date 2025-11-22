@@ -18,6 +18,7 @@ import asyncio
 from app.services.email_service import EmailService
 import logging
 import os
+from app.core.logging import SupabaseAPILogger
 
 # Setup logger per il sistema analytics
 def setup_analytics_logger():
@@ -54,6 +55,9 @@ logging.basicConfig(level=logging.INFO)
 
 # Crea istanza globale del servizio email
 email_service = EmailService()
+
+# Crea istanza del Logger
+api_logger = SupabaseAPILogger(supabase_client)
 
 @celery_app.task(bind=True, name="process_text", acks_late=True)
 def process_text_task(self, text: str, processing_type: str, user_id: str, options: dict = None):
@@ -308,7 +312,7 @@ def process_payment_success_task(self, payment_data: Dict) -> Dict:
                     'amount': payment_data.get('amount'),
                     'payment_intent_id': payment_intent_id or 'INVOICE',
                     'subscription_id': subscription_result.get('id'),
-                    'payment_date': datetime.utcnow().strftime("%d/%m/%Y alle %H:%M UTC")
+                    'payment_date': datetime.utcnow().strftime("%d/%m/%Y at %H:%M UTC")
                 }
             },
             queue="emails",
@@ -1258,6 +1262,40 @@ def process_expired_subscriptions(self):
             'requires_manual_intervention': True
         }
 
+# Cleanup Section
+@celery_app.task(bind=True, name="cleanup_tables_task", acks_late=True)
+def cleanup_tables_task(self):
+    """Task periodico per pulire le tabelle su DB"""
+    print("="*50)
+    print("TASK cleanup_tables_task CHIAMATO!")
+    print(f"Task ID: {self.request.id}")
+    print(f"Timestamp: {datetime.utcnow()}")
+    print("="*50)
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # Payments
+            deleted_count = loop.run_until_complete(
+                payment_service.cleanup_old_failed_payment_intents(days=30)
+            )
+            # Emails
+            deleted_count = loop.run_until_complete(
+                email_service.cleanup_old_failed_email_queue(days=30)
+            )
+            # Logs
+            deleted_count = loop.run_until_complete(
+                api_logger.cleanup_old_successful_log_api_call(days=30)
+            )
+            
+            
+            logger.info(f"Cleaned up {deleted_count} old payment intents")
+            return {'deleted_count': deleted_count}
+        finally:
+            loop.close()             
+    except Exception as e:
+        logger.error(f"Error in cleanup task: {str(e)}")
+        raise self.retry(exc=e)
 
 @celery_app.task(bind=True, name="process_free_user_deletions", max_retries=3, default_retry_delay=60, acks_late=True)
 def process_free_user_deletions(self):
