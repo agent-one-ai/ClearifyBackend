@@ -613,7 +613,13 @@ async def verifyUserEmail(verification_data: VerificationTokenRequest, request: 
                         .eq("email", user_record["email"])
                         .execute()
                     )
-            
+
+            # Invio email di benvenuto dopo la verifica
+            email_service.send_registration_confirmation_email(
+                to_email=user_record["email"],
+                customer_name=user_record.get("full_name") if user_record.get("full_name") else user_record["email"]
+            )
+
             response_data = {
                 "success": True
             }
@@ -919,6 +925,7 @@ async def register_user(user_data: UserRegisterRequest, request: Request):
         print(f"DEBUG: User created successfully: {user_record['id']}")
         print(f"DEBUG: Passing TOKEN {token} to {user_data.email}")
 
+        # Invio email di verifica account
         email_task = send_verification_email_task.apply_async(
                 kwargs={
                     'email_data': {
@@ -937,7 +944,7 @@ async def register_user(user_data: UserRegisterRequest, request: Request):
                     'interval_max': 300
                 }
             )
-        
+
         # Rimuovi password hash e serializza datetime
         user_record_clean = user_record.copy()
         user_record_clean.pop("password_hash", None)

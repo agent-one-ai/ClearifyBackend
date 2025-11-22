@@ -31,6 +31,7 @@ MarkupSafe==2.1.5
 # Redis and task queue
 redis==5.0.8
 celery==5.4.0
+flower==2.0.1  # Celery monitoring dashboard
 
 # HTTP client
 httpx==0.27.0
