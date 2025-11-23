@@ -1310,7 +1310,40 @@ def process_free_user_deletions(self):
     try:
         logger.info(f"🚀 TASK STARTED!")
 
-        # Cerco tutti gli utenti free che hanno richiesto la cancellazione
+        # STEP 1: Segna per cancellazione gli utenti non verificati da più di un giorno
+        one_day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+
+        logger.info(f"🔍 Checking for unverified users with verification_last_update older than {one_day_ago}")
+
+        # Trova utenti non verificati con token di verifica vecchio
+        unverified_users = supabase_client.table("users") \
+            .select("id, email, full_name, verification_last_update, isVerified") \
+            .eq("isVerified", False) \
+            .eq("subscription_tier", "free") \
+            .eq("cancellation_request", False) \
+            .lt("verification_last_update", one_day_ago) \
+            .execute()
+
+        # Segna questi utenti per la cancellazione
+        marked_count = 0
+        if unverified_users.data:
+            for user in unverified_users.data:
+                try:
+                    logger.info(f"⚠️ Marking unverified user for deletion: {user['email']} (last verification update: {user.get('verification_last_update')})")
+
+                    supabase_client.table("users") \
+                        .update({"cancellation_request": True, "updated_at": datetime.now(timezone.utc).isoformat()}) \
+                        .eq("id", user['id']) \
+                        .execute()
+
+                    marked_count += 1
+                except Exception as mark_error:
+                    logger.error(f"❌ Failed to mark user {user['email']} for deletion: {str(mark_error)}")
+                    continue
+
+        logger.info(f"✅ Marked {marked_count} unverified users for deletion")
+
+        # STEP 2: Processa le cancellazioni di utenti free che hanno richiesto la cancellazione
         result = supabase_client.table("users") \
             .select("id, email, full_name, cancellation_request, subscription_tier") \
             .eq("cancellation_request", True) \
@@ -1322,6 +1355,7 @@ def process_free_user_deletions(self):
             return {
                 'success': True,
                 'deleted_count': 0,
+                'marked_count': marked_count,
                 'message': 'No free users pending deletion'
             }
 
@@ -1365,13 +1399,14 @@ def process_free_user_deletions(self):
                 failed_count += 1
                 continue
 
-        logger.info(f"✅ Task completed: {deleted_count} deleted, {failed_count} failed")
+        logger.info(f"✅ Task completed: {deleted_count} deleted, {failed_count} failed, {marked_count} marked for deletion")
 
         return {
             'success': True,
             'deleted_count': deleted_count,
             'failed_count': failed_count,
-            'processed_at': datetime.utcnow().isoformat()
+            'marked_count': marked_count,
+            'processed_at': datetime.now(timezone.utc).isoformat()
         }
 
     except Exception as e:

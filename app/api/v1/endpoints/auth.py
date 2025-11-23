@@ -443,7 +443,10 @@ async def verifyUserEmail(verification_data: VerificationEmailRequestRequest, re
         if not user_token:
             user_token = get_verification_token()
 
-            update_data = {"verification_token": user_token}
+            update_data = {
+                "verification_token": user_token,
+                "verification_last_update": get_utc_now()
+            }
 
             #Lo salvo su database e refresho
             result = (
@@ -695,7 +698,10 @@ async def login_user(login_data: UserLoginRequest, request: Request):
                 #Ottengo un nuovo token e lo salvo su database
                 token = get_verification_token()
 
-                update_data = {"verification_token": token}
+                update_data = {
+                    "verification_token": token,
+                    "verification_last_update": get_utc_now()
+                }
 
                 #Lo salvo su database e refresho
                 result = (
@@ -835,7 +841,8 @@ async def register_user(user_data: UserRegisterRequest, request: Request):
             "created_at": current_time,
             "updated_at": current_time,
             "google_id": None,
-            "verification_token": token
+            "verification_token": token,
+            "verification_last_update": current_time
         }
         
         print(f"DEBUG: Inserting user into database")
